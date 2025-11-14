@@ -4,5 +4,4 @@ opencms-exploded/opencms.war
 
 # Generated SBOM files
 generate-sboms/*.json
-generate-sboms/*.md
 generate-sboms/*.log
