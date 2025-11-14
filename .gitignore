@@ -1,0 +1,8 @@
+# Large binary files (downloaded by scripts)
+opencms-zip-only/opencms-9.5.0.zip
+opencms-exploded/opencms.war
+
+# Generated SBOM files
+generate-sboms/*.json
+generate-sboms/*.md
+generate-sboms/*.log
