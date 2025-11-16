@@ -320,7 +320,7 @@ $ReportFile = Join-Path $OutputDir "SBOM-Analysis-Report.md"
 
 # Collect component counts from all SBOMs
 $ComponentData = @()
-foreach ($project in @("just-a-bag-of-jars", "opencms-exploded", "opencms-zip-only")) {
+foreach ($project in @("just-a-bag-of-jars", "opencms-exploded", "opencms-zip-only", "code-with-quarkus")) {
     $syftFile = Join-Path $OutputDir "$project-syft-sbom.json"
     $grypeFile = Join-Path $OutputDir "$project-grype-sbom.json"
     $cdxgenFile = Join-Path $OutputDir "$project-cdxgen-sbom.json"

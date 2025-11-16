@@ -347,7 +347,7 @@ declare -A SCALIBR_TIMES
 declare -A OSV_TIMES
 
 # Collect component counts from all SBOMs
-for PROJECT in "just-a-bag-of-jars" "opencms-exploded" "opencms-zip-only"; do
+for PROJECT in "just-a-bag-of-jars" "opencms-exploded" "opencms-zip-only" "code-with-quarkus"; do
     SYFT_FILE="$OUTPUT_DIR/$PROJECT-syft-sbom.json"
     GRYPE_FILE="$OUTPUT_DIR/$PROJECT-grype-sbom.json"
     CDXGEN_FILE="$OUTPUT_DIR/$PROJECT-cdxgen-sbom.json"
