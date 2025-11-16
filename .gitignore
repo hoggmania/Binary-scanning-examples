@@ -5,3 +5,9 @@ opencms-exploded/opencms.war
 # Generated SBOM files
 generate-sboms/*.json
 generate-sboms/*.log
+generate-sboms/*.atom
+generate-sboms/*.slices.json
+
+# Build/download artifacts
+*.msi
+deps.slices.json

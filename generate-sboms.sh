@@ -8,6 +8,7 @@
 # DESCRIPTION:
 #   Scans directories for binary archives (JARs, WARs, EARs, ZIPs, etc.) and generates:
 #   - SBOM files using Syft, Grype, and Cdxgen (all in CycloneDX JSON format)
+#   - SBOM files using OSV-Scalibr (SPDX JSON format)
 #   - Vulnerability reports using OSV-Scanner (note: incompatible with CycloneDX, reports 0)
 #   - Comparative analysis report in Markdown format
 #
@@ -124,14 +125,15 @@ log() {
 # CLEANUP PREVIOUS RUN
 # ==========================================
 if [ "$SKIP_GENERATION" = false ]; then
-    echo -e "\033[0;36mCleaning up previous run files...\033[0m"
+    echo -e "${CYAN}Cleaning up previous run files...${NC}"
     rm -f "$OUTPUT_DIR"/*-syft-sbom.json
     rm -f "$OUTPUT_DIR"/*-grype-sbom.json
     rm -f "$OUTPUT_DIR"/*-cdxgen-sbom.json
+    rm -f "$OUTPUT_DIR"/*-scalibr-sbom.json
     rm -f "$OUTPUT_DIR"/*-osv-scanner.json
     rm -f "$SUMMARY_FILE"
 else
-    echo -e "\033[0;33mSkipping SBOM generation (using existing files)...\033[0m"
+    echo -e "${YELLOW}Skipping SBOM generation (using existing files)...${NC}"
 fi
 
 rm -f "$LOG_FILE"
@@ -189,10 +191,11 @@ for DIR_PATH in "${DIRS_TO_SCAN[@]}"; do
     SYFT_OUT="$OUTPUT_DIR/$DIR_NAME-syft-sbom.json"
     GRYPE_OUT="$OUTPUT_DIR/$DIR_NAME-grype-sbom.json"
     CDXGEN_OUT="$OUTPUT_DIR/$DIR_NAME-cdxgen-sbom.json"
+    SCALIBR_OUT="$OUTPUT_DIR/$DIR_NAME-scalibr-sbom.json"
     OSV_OUT="$OUTPUT_DIR/$DIR_NAME-osv-scanner.json"
     
     # Remove existing files if present
-    rm -f "$SYFT_OUT" "$GRYPE_OUT" "$CDXGEN_OUT" "$OSV_OUT"
+    rm -f "$SYFT_OUT" "$GRYPE_OUT" "$CDXGEN_OUT" "$SCALIBR_OUT" "$OSV_OUT"
     
     # -------------------------------
     # 1) Syft
@@ -249,7 +252,25 @@ for DIR_PATH in "${DIRS_TO_SCAN[@]}"; do
     fi
     
     # -------------------------------
-    # 4) OSV-Scanner
+    # 4) OSV-Scalibr
+    # -------------------------------
+    SCALIBR_START=$(date +%s.%N)
+    if scalibr -o "spdx23-json=$SCALIBR_OUT" "$DIR_PATH" >/dev/null 2>&1; then
+        SCALIBR_END=$(date +%s.%N)
+        SCALIBR_TIME=$(echo "$SCALIBR_END - $SCALIBR_START" | bc)
+        SCALIBR_TIME_FORMATTED=$(printf "%.2f" "$SCALIBR_TIME")
+        log "OSV-Scalibr SBOM generated: $SCALIBR_OUT (Time: ${SCALIBR_TIME_FORMATTED}s)"
+        SCALIBR_STATUS="Success"
+    else
+        SCALIBR_END=$(date +%s.%N)
+        SCALIBR_TIME=$(echo "$SCALIBR_END - $SCALIBR_START" | bc)
+        SCALIBR_TIME_FORMATTED=$(printf "%.2f" "$SCALIBR_TIME")
+        log "ERROR: OSV-Scalibr failed for $DIR_PATH"
+        SCALIBR_STATUS="Failed"
+    fi
+    
+    # -------------------------------
+    # 5) OSV-Scanner
     # -------------------------------
     OSV_START=$(date +%s.%N)
     if osv-scanner --sbom "$SYFT_OUT" --format json > "$OSV_OUT" 2>&1; then
@@ -288,6 +309,8 @@ for DIR_PATH in "${DIRS_TO_SCAN[@]}"; do
   "GrypeTime": "${GRYPE_TIME_FORMATTED}s",
   "Cdxgen": "$CDXGEN_STATUS",
   "CdxgenTime": "${CDXGEN_TIME_FORMATTED}s",
+  "Scalibr": "$SCALIBR_STATUS",
+  "ScalibrTime": "${SCALIBR_TIME_FORMATTED}s",
   "OsvScanner": "$OSV_STATUS",
   "OsvTime": "${OSV_TIME_FORMATTED}s"
 }
@@ -315,10 +338,12 @@ log "Generating markdown report..."
 declare -A SYFT_COUNTS
 declare -A GRYPE_COUNTS
 declare -A CDXGEN_COUNTS
+declare -A SCALIBR_COUNTS
 declare -A OSV_VULNS
 declare -A SYFT_TIMES
 declare -A GRYPE_TIMES
 declare -A CDXGEN_TIMES
+declare -A SCALIBR_TIMES
 declare -A OSV_TIMES
 
 # Collect component counts from all SBOMs
@@ -326,6 +351,7 @@ for PROJECT in "just-a-bag-of-jars" "opencms-exploded" "opencms-zip-only"; do
     SYFT_FILE="$OUTPUT_DIR/$PROJECT-syft-sbom.json"
     GRYPE_FILE="$OUTPUT_DIR/$PROJECT-grype-sbom.json"
     CDXGEN_FILE="$OUTPUT_DIR/$PROJECT-cdxgen-sbom.json"
+    SCALIBR_FILE="$OUTPUT_DIR/$PROJECT-scalibr-sbom.json"
     OSV_FILE="$OUTPUT_DIR/$PROJECT-osv-scanner.json"
     
     # Count Syft components
@@ -349,6 +375,13 @@ for PROJECT in "just-a-bag-of-jars" "opencms-exploded" "opencms-zip-only"; do
         CDXGEN_COUNTS[$PROJECT]=0
     fi
     
+    # Count Scalibr packages (SPDX format)
+    if [ -f "$SCALIBR_FILE" ]; then
+        SCALIBR_COUNTS[$PROJECT]=$(jq '.packages | length' "$SCALIBR_FILE" 2>/dev/null || echo 0)
+    else
+        SCALIBR_COUNTS[$PROJECT]=0
+    fi
+    
     # Count OSV vulnerabilities
     if [ -f "$OSV_FILE" ]; then
         OSV_VULNS[$PROJECT]=$(jq '.results | length' "$OSV_FILE" 2>/dev/null || echo 0)
@@ -363,6 +396,7 @@ if [ -f "$SUMMARY_FILE" ]; then
         SYFT_TIMES[$PROJECT]=$(jq -r ".[] | select(.Directory | endswith(\"$PROJECT\")) | .SyftTime" "$SUMMARY_FILE" 2>/dev/null || echo "0s")
         GRYPE_TIMES[$PROJECT]=$(jq -r ".[] | select(.Directory | endswith(\"$PROJECT\")) | .GrypeTime" "$SUMMARY_FILE" 2>/dev/null || echo "0s")
         CDXGEN_TIMES[$PROJECT]=$(jq -r ".[] | select(.Directory | endswith(\"$PROJECT\")) | .CdxgenTime" "$SUMMARY_FILE" 2>/dev/null || echo "0s")
+        SCALIBR_TIMES[$PROJECT]=$(jq -r ".[] | select(.Directory | endswith(\"$PROJECT\")) | .ScalibrTime" "$SUMMARY_FILE" 2>/dev/null || echo "0s")
         OSV_TIMES[$PROJECT]=$(jq -r ".[] | select(.Directory | endswith(\"$PROJECT\")) | .OsvTime" "$SUMMARY_FILE" 2>/dev/null || echo "0s")
     done
 fi
@@ -372,7 +406,7 @@ cat > "$REPORT_FILE" <<'EOFMD'
 # SBOM Tool Comparison Report
 
 **Generated:** $(date '+%Y-%m-%d %H:%M:%S')  
-**Tools:** Syft v1.36.0, Grype v0.103.0, Cdxgen v11.11.0, OSV-Scanner  
+**Tools:** Syft v1.36.0, Grype v0.103.0, Cdxgen v11.11.0, OSV-Scalibr v0.3.6, OSV-Scanner  
 **Scan Type:** Binary Archive Scanning (JARs, WARs, ZIPs, etc.)
 
 ---
@@ -383,8 +417,8 @@ This report presents automated findings from SBOM generation and vulnerability s
 
 ### Quick Results
 
-| Project | Syft | Grype | Cdxgen | OSV-Scanner | Fastest Tool |
-|---------|------|-------|--------|-------------|--------------|
+| Project | Syft | Grype | Cdxgen | Scalibr | OSV-Scanner | Fastest Tool |
+|---------|------|-------|--------|---------|-------------|--------------|
 EOFMD
 
 # Add project rows
@@ -392,6 +426,7 @@ for PROJECT in "just-a-bag-of-jars" "opencms-exploded" "opencms-zip-only"; do
     SYFT_SEC=$(echo "${SYFT_TIMES[$PROJECT]}" | sed 's/s$//')
     GRYPE_SEC=$(echo "${GRYPE_TIMES[$PROJECT]}" | sed 's/s$//')
     CDXGEN_SEC=$(echo "${CDXGEN_TIMES[$PROJECT]}" | sed 's/s$//')
+    SCALIBR_SEC=$(echo "${SCALIBR_TIMES[$PROJECT]}" | sed 's/s$//')
     OSV_SEC=$(echo "${OSV_TIMES[$PROJECT]}" | sed 's/s$//')
     
     # Build list of valid tools (only those that found components > 0)
@@ -413,6 +448,11 @@ for PROJECT in "just-a-bag-of-jars" "opencms-exploded" "opencms-zip-only"; do
         VALID_TIMES+=("$CDXGEN_SEC")
     fi
     
+    if [ "${SCALIBR_COUNTS[$PROJECT]}" -gt 0 ]; then
+        VALID_TOOLS+=("Scalibr")
+        VALID_TIMES+=("$SCALIBR_SEC")
+    fi
+    
     # Find fastest among valid tools
     if [ ${#VALID_TOOLS[@]} -gt 0 ]; then
         FASTEST_TIME=$(printf '%s\n' "${VALID_TIMES[@]}" | sort -n | head -1)
@@ -428,7 +468,7 @@ for PROJECT in "just-a-bag-of-jars" "opencms-exploded" "opencms-zip-only"; do
         FASTEST_TOOL="None"
     fi
     
-    echo "| **$PROJECT** | ${SYFT_COUNTS[$PROJECT]} (${SYFT_TIMES[$PROJECT]}) | ${GRYPE_COUNTS[$PROJECT]} (${GRYPE_TIMES[$PROJECT]}) | ${CDXGEN_COUNTS[$PROJECT]} (${CDXGEN_TIMES[$PROJECT]}) | ${OSV_VULNS[$PROJECT]} vulns (${OSV_TIMES[$PROJECT]}) | ⚡ $FASTEST_TOOL |" >> "$REPORT_FILE"
+    echo "| **$PROJECT** | ${SYFT_COUNTS[$PROJECT]} (${SYFT_TIMES[$PROJECT]}) | ${GRYPE_COUNTS[$PROJECT]} (${GRYPE_TIMES[$PROJECT]}) | ${CDXGEN_COUNTS[$PROJECT]} (${CDXGEN_TIMES[$PROJECT]}) | ${SCALIBR_COUNTS[$PROJECT]} (${SCALIBR_TIMES[$PROJECT]}) | ${OSV_VULNS[$PROJECT]} vulns (${OSV_TIMES[$PROJECT]}) | ⚡ $FASTEST_TOOL |" >> "$REPORT_FILE"
 done
 
 cat >> "$REPORT_FILE" <<'EOFMD'
@@ -447,10 +487,12 @@ EOFMD
 SYFT_AVG=$(echo "scale=1; (${SYFT_COUNTS[just-a-bag-of-jars]} + ${SYFT_COUNTS[opencms-exploded]} + ${SYFT_COUNTS[opencms-zip-only]}) / 3" | bc)
 GRYPE_AVG=$(echo "scale=1; (${GRYPE_COUNTS[just-a-bag-of-jars]} + ${GRYPE_COUNTS[opencms-exploded]} + ${GRYPE_COUNTS[opencms-zip-only]}) / 3" | bc)
 CDXGEN_AVG=$(echo "scale=1; (${CDXGEN_COUNTS[just-a-bag-of-jars]} + ${CDXGEN_COUNTS[opencms-exploded]} + ${CDXGEN_COUNTS[opencms-zip-only]}) / 3" | bc)
+SCALIBR_AVG=$(echo "scale=1; (${SCALIBR_COUNTS[just-a-bag-of-jars]} + ${SCALIBR_COUNTS[opencms-exploded]} + ${SCALIBR_COUNTS[opencms-zip-only]}) / 3" | bc)
 
 echo "| **Syft** | ${SYFT_COUNTS[just-a-bag-of-jars]} | ${SYFT_COUNTS[opencms-exploded]} | ${SYFT_COUNTS[opencms-zip-only]} | $SYFT_AVG |" >> "$REPORT_FILE"
 echo "| **Grype** | ${GRYPE_COUNTS[just-a-bag-of-jars]} | ${GRYPE_COUNTS[opencms-exploded]} | ${GRYPE_COUNTS[opencms-zip-only]} | $GRYPE_AVG |" >> "$REPORT_FILE"
 echo "| **Cdxgen** | ${CDXGEN_COUNTS[just-a-bag-of-jars]} | ${CDXGEN_COUNTS[opencms-exploded]} | ${CDXGEN_COUNTS[opencms-zip-only]} | $CDXGEN_AVG |" >> "$REPORT_FILE"
+echo "| **Scalibr** | ${SCALIBR_COUNTS[just-a-bag-of-jars]} | ${SCALIBR_COUNTS[opencms-exploded]} | ${SCALIBR_COUNTS[opencms-zip-only]} | $SCALIBR_AVG |" >> "$REPORT_FILE"
 
 cat >> "$REPORT_FILE" <<'EOFMD'
 
@@ -465,12 +507,13 @@ for PROJECT in "just-a-bag-of-jars" "opencms-exploded" "opencms-zip-only"; do
     SYFT_SEC=$(echo "${SYFT_TIMES[$PROJECT]}" | sed 's/s$//')
     GRYPE_SEC=$(echo "${GRYPE_TIMES[$PROJECT]}" | sed 's/s$//')
     CDXGEN_SEC=$(echo "${CDXGEN_TIMES[$PROJECT]}" | sed 's/s$//')
+    SCALIBR_SEC=$(echo "${SCALIBR_TIMES[$PROJECT]}" | sed 's/s$//')
     OSV_SEC=$(echo "${OSV_TIMES[$PROJECT]}" | sed 's/s$//')
     
-    TOTAL_TIME=$(echo "$SYFT_SEC + $GRYPE_SEC + $CDXGEN_SEC + $OSV_SEC" | bc)
+    TOTAL_TIME=$(echo "$SYFT_SEC + $GRYPE_SEC + $CDXGEN_SEC + $SCALIBR_SEC + $OSV_SEC" | bc)
     
-    # Find max components
-    MAX_COMP=$(echo -e "${SYFT_COUNTS[$PROJECT]}\n${GRYPE_COUNTS[$PROJECT]}\n${CDXGEN_COUNTS[$PROJECT]}" | sort -n | tail -1)
+    # Find max components among valid tools
+    MAX_COMP=$(echo -e "${SYFT_COUNTS[$PROJECT]}\n${GRYPE_COUNTS[$PROJECT]}\n${CDXGEN_COUNTS[$PROJECT]}\n${SCALIBR_COUNTS[$PROJECT]}" | sort -n | tail -1)
     
     # Build list of valid tools for speed comparison (only those that found components > 0)
     VALID_SPEED_TOOLS=()
@@ -491,6 +534,11 @@ for PROJECT in "just-a-bag-of-jars" "opencms-exploded" "opencms-zip-only"; do
         VALID_SPEED_TIMES+=("$CDXGEN_SEC")
     fi
     
+    if [ "${SCALIBR_COUNTS[$PROJECT]}" -gt 0 ]; then
+        VALID_SPEED_TOOLS+=("Scalibr")
+        VALID_SPEED_TIMES+=("$SCALIBR_SEC")
+    fi
+    
     # Find fastest among valid tools
     if [ ${#VALID_SPEED_TOOLS[@]} -gt 0 ]; then
         MIN_TIME=$(printf '%s\n' "${VALID_SPEED_TIMES[@]}" | sort -n | head -1)
@@ -507,12 +555,17 @@ for PROJECT in "just-a-bag-of-jars" "opencms-exploded" "opencms-zip-only"; do
         MIN_TIME="0"
     fi
     
-    if [ "${SYFT_COUNTS[$PROJECT]}" = "$MAX_COMP" ]; then
+    # Find component winner
+    if [ "${SYFT_COUNTS[$PROJECT]}" = "$MAX_COMP" ] && [ "${SYFT_COUNTS[$PROJECT]}" -gt 0 ]; then
         COMP_WINNER="Syft"
-    elif [ "${GRYPE_COUNTS[$PROJECT]}" = "$MAX_COMP" ]; then
+    elif [ "${GRYPE_COUNTS[$PROJECT]}" = "$MAX_COMP" ] && [ "${GRYPE_COUNTS[$PROJECT]}" -gt 0 ]; then
         COMP_WINNER="Grype"
-    else
+    elif [ "${CDXGEN_COUNTS[$PROJECT]}" = "$MAX_COMP" ] && [ "${CDXGEN_COUNTS[$PROJECT]}" -gt 0 ]; then
         COMP_WINNER="Cdxgen"
+    elif [ "${SCALIBR_COUNTS[$PROJECT]}" = "$MAX_COMP" ] && [ "${SCALIBR_COUNTS[$PROJECT]}" -gt 0 ]; then
+        COMP_WINNER="Scalibr"
+    else
+        COMP_WINNER="None"
     fi
     
     cat >> "$REPORT_FILE" <<EOFSECTION
@@ -521,9 +574,10 @@ for PROJECT in "just-a-bag-of-jars" "opencms-exploded" "opencms-zip-only"; do
 
 | Tool | Components Detected | Time | Status |
 |------|---------------------|------|--------|
-| **Syft** | ${SYFT_COUNTS[$PROJECT]} $([ "${SYFT_COUNTS[$PROJECT]}" = "$MAX_COMP" ] && echo "🏆" || echo "") | ${SYFT_TIMES[$PROJECT]} $([ "$SYFT_SEC" = "$MIN_TIME" ] && echo "⚡" || echo "") | $([ "${SYFT_COUNTS[$PROJECT]}" -gt 0 ] && echo "✅" || echo "❌") |
-| **Grype** | ${GRYPE_COUNTS[$PROJECT]} $([ "${GRYPE_COUNTS[$PROJECT]}" = "$MAX_COMP" ] && echo "🏆" || echo "") | ${GRYPE_TIMES[$PROJECT]} $([ "$GRYPE_SEC" = "$MIN_TIME" ] && echo "⚡" || echo "") | $([ "${GRYPE_COUNTS[$PROJECT]}" -gt 0 ] && echo "✅" || echo "❌") |
-| **Cdxgen** | ${CDXGEN_COUNTS[$PROJECT]} $([ "${CDXGEN_COUNTS[$PROJECT]}" = "$MAX_COMP" ] && echo "🏆" || echo "") | ${CDXGEN_TIMES[$PROJECT]} $([ "$CDXGEN_SEC" = "$MIN_TIME" ] && echo "⚡" || echo "") | $([ "${CDXGEN_COUNTS[$PROJECT]}" -gt 0 ] && echo "✅" || echo "❌") |
+| **Syft** | ${SYFT_COUNTS[$PROJECT]} $([ "${SYFT_COUNTS[$PROJECT]}" = "$MAX_COMP" ] && [ "${SYFT_COUNTS[$PROJECT]}" -gt 0 ] && echo "🏆" || echo "") | ${SYFT_TIMES[$PROJECT]} $([ "$SYFT_SEC" = "$MIN_TIME" ] && [ "${SYFT_COUNTS[$PROJECT]}" -gt 0 ] && echo "⚡" || echo "") | $([ "${SYFT_COUNTS[$PROJECT]}" -gt 0 ] && echo "✅" || echo "❌") |
+| **Grype** | ${GRYPE_COUNTS[$PROJECT]} $([ "${GRYPE_COUNTS[$PROJECT]}" = "$MAX_COMP" ] && [ "${GRYPE_COUNTS[$PROJECT]}" -gt 0 ] && echo "🏆" || echo "") | ${GRYPE_TIMES[$PROJECT]} $([ "$GRYPE_SEC" = "$MIN_TIME" ] && [ "${GRYPE_COUNTS[$PROJECT]}" -gt 0 ] && echo "⚡" || echo "") | $([ "${GRYPE_COUNTS[$PROJECT]}" -gt 0 ] && echo "✅" || echo "❌") |
+| **Cdxgen** | ${CDXGEN_COUNTS[$PROJECT]} $([ "${CDXGEN_COUNTS[$PROJECT]}" = "$MAX_COMP" ] && [ "${CDXGEN_COUNTS[$PROJECT]}" -gt 0 ] && echo "🏆" || echo "") | ${CDXGEN_TIMES[$PROJECT]} $([ "$CDXGEN_SEC" = "$MIN_TIME" ] && [ "${CDXGEN_COUNTS[$PROJECT]}" -gt 0 ] && echo "⚡" || echo "") | $([ "${CDXGEN_COUNTS[$PROJECT]}" -gt 0 ] && echo "✅" || echo "❌") |
+| **Scalibr** | ${SCALIBR_COUNTS[$PROJECT]} $([ "${SCALIBR_COUNTS[$PROJECT]}" = "$MAX_COMP" ] && [ "${SCALIBR_COUNTS[$PROJECT]}" -gt 0 ] && echo "🏆" || echo "") | ${SCALIBR_TIMES[$PROJECT]} $([ "$SCALIBR_SEC" = "$MIN_TIME" ] && [ "${SCALIBR_COUNTS[$PROJECT]}" -gt 0 ] && echo "⚡" || echo "") | $([ "${SCALIBR_COUNTS[$PROJECT]}" -gt 0 ] && echo "✅" || echo "❌") |
 | **OSV-Scanner** | ${OSV_VULNS[$PROJECT]} vulnerabilities | ${OSV_TIMES[$PROJECT]} | ✅ |
 | **Total** | **$MAX_COMP components** | **${TOTAL_TIME}s** | |
 

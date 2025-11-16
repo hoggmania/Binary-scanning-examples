@@ -5,6 +5,7 @@
 .DESCRIPTION
     Scans directories for binary archives (JARs, WARs, EARs, ZIPs, etc.) and generates:
     - SBOM files using Syft, Grype, and Cdxgen (all in CycloneDX JSON format)
+    - SBOM files using OSV-Scalibr (SPDX JSON format)
     - Vulnerability reports using OSV-Scanner (note: incompatible with CycloneDX, reports 0)
     - Comparative analysis report in Markdown format
 
@@ -110,6 +111,7 @@ if (-not $SkipGeneration) {
     Get-ChildItem -Path $OutputDir -Filter "*-syft-sbom.json" | Remove-Item -Force
     Get-ChildItem -Path $OutputDir -Filter "*-grype-sbom.json" | Remove-Item -Force
     Get-ChildItem -Path $OutputDir -Filter "*-cdxgen-sbom.json" | Remove-Item -Force
+    Get-ChildItem -Path $OutputDir -Filter "*-scalibr-sbom.json" | Remove-Item -Force
     Get-ChildItem -Path $OutputDir -Filter "*-osv-scanner.json" | Remove-Item -Force
     if (Test-Path $SummaryFile) { Remove-Item $SummaryFile -Force }
 } else {
@@ -168,11 +170,11 @@ foreach ($Dir in $DirsToScan) {
     $SyftOut = Join-Path $OutputDir "$Name-syft-sbom.json"
     $GrypeOut = Join-Path $OutputDir "$Name-grype-sbom.json"
     $CdxgenOut = Join-Path $OutputDir "$Name-cdxgen-sbom.json"
+    $ScalibrOut = Join-Path $OutputDir "$Name-scalibr-sbom.json"
     $OsvOut = Join-Path $OutputDir "$Name-osv-scanner.json"
-    $MsSbomOut = Join-Path $OutputDir "$Name-ms-sbom.json"
 
     # Remove existing files if present
-    foreach ($f in @($SyftOut, $GrypeOut, $CdxgenOut, $OsvOut, $MsSbomOut)) {
+    foreach ($f in @($SyftOut, $GrypeOut, $CdxgenOut, $ScalibrOut, $OsvOut)) {
         if (Test-Path $f) { Remove-Item $f -Force }
     }
 
@@ -185,9 +187,10 @@ foreach ($Dir in $DirsToScan) {
         GrypeTime = ""
         Cdxgen   = ""
         CdxgenTime = ""
+        Scalibr  = ""
+        ScalibrTime = ""
         OsvScanner = ""
         OsvTime = ""
-        MSBOM    = ""
     }
 
     # -------------------------------
@@ -246,7 +249,25 @@ foreach ($Dir in $DirsToScan) {
     }
 
     # -------------------------------
-    # 4) OSV-Scanner (vulnerability scanning using Syft SBOM)
+    # 4) OSV-Scalibr (SPDX SBOM generation)
+    # -------------------------------
+    $ScalibrStart = Get-Date
+    try {
+        # OSV-Scalibr generates SPDX format SBOMs
+        scalibr -o "spdx23-json=$ScalibrOut" "$DirPath" 2>&1 | Out-Null
+        $ScalibrDuration = (Get-Date) - $ScalibrStart
+        $Status.ScalibrTime = "$([Math]::Round($ScalibrDuration.TotalSeconds, 2))s"
+        Write-Log "OSV-Scalibr SBOM generated: $ScalibrOut (Time: $($Status.ScalibrTime))"
+        $Status.Scalibr = "Success"
+    } catch {
+        $ScalibrDuration = (Get-Date) - $ScalibrStart
+        $Status.ScalibrTime = "$([Math]::Round($ScalibrDuration.TotalSeconds, 2))s"
+        Write-Log "ERROR: OSV-Scalibr failed for $DirPath - $($_.Exception.Message)"
+        $Status.Scalibr = "Failed"
+    }
+
+    # -------------------------------
+    # 5) OSV-Scanner (vulnerability scanning using Syft SBOM)
     # -------------------------------
     $OsvStart = Get-Date
     try {
@@ -303,6 +324,7 @@ foreach ($project in @("just-a-bag-of-jars", "opencms-exploded", "opencms-zip-on
     $syftFile = Join-Path $OutputDir "$project-syft-sbom.json"
     $grypeFile = Join-Path $OutputDir "$project-grype-sbom.json"
     $cdxgenFile = Join-Path $OutputDir "$project-cdxgen-sbom.json"
+    $scalibrFile = Join-Path $OutputDir "$project-scalibr-sbom.json"
     $osvFile = Join-Path $OutputDir "$project-osv-scanner.json"
     
     if (Test-Path $syftFile) {
@@ -320,6 +342,12 @@ foreach ($project in @("just-a-bag-of-jars", "opencms-exploded", "opencms-zip-on
         $cdxgenCount = $cdxgenData.components.Count
     } else { $cdxgenCount = 0 }
     
+    # OSV-Scalibr uses SPDX format - count packages
+    if (Test-Path $scalibrFile) {
+        $scalibrData = Get-Content $scalibrFile | ConvertFrom-Json
+        $scalibrCount = if ($scalibrData.packages) { $scalibrData.packages.Count } else { 0 }
+    } else { $scalibrCount = 0 }
+    
     # OSV-Scanner output format is different - count vulnerabilities
     if (Test-Path $osvFile) {
         $osvData = Get-Content $osvFile | ConvertFrom-Json
@@ -331,6 +359,7 @@ foreach ($project in @("just-a-bag-of-jars", "opencms-exploded", "opencms-zip-on
         Syft = $syftCount
         Grype = $grypeCount
         Cdxgen = $cdxgenCount
+        Scalibr = $scalibrCount
         OsvVulns = $osvVulnCount
     }
 }
@@ -347,6 +376,7 @@ $TimingData = $Summary | ForEach-Object {
         SyftTime = $_.SyftTime
         GrypeTime = $_.GrypeTime
         CdxgenTime = $_.CdxgenTime
+        ScalibrTime = $_.ScalibrTime
         OsvTime = $_.OsvTime
     }
 }
@@ -356,7 +386,7 @@ $Report = @"
 # SBOM Tool Comparison Report
 
 **Generated:** $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")  
-**Tools:** Syft v1.36.0, Grype v0.103.0, Cdxgen v11.11.0, OSV-Scanner  
+**Tools:** Syft v1.36.0, Grype v0.103.0, Cdxgen v11.11.0, OSV-Scalibr v0.3.6, OSV-Scanner  
 **Scan Type:** Binary Archive Scanning (JARs, WARs, ZIPs, etc.)
 
 ---
@@ -367,8 +397,8 @@ This report presents automated findings from SBOM generation and vulnerability s
 
 ### Quick Results
 
-| Project | Syft | Grype | Cdxgen | OSV-Scanner | Fastest Tool |
-|---------|------|-------|--------|-------------|--------------|
+| Project | Syft | Grype | Cdxgen | Scalibr | OSV-Scanner | Fastest Tool |
+|---------|------|-------|--------|---------|-------------|--------------|
 $(@(foreach ($item in $ComponentData) {
     $timing = $TimingData | Where-Object { $_.Project -eq $item.Project }
     
@@ -377,6 +407,7 @@ $(@(foreach ($item in $ComponentData) {
     if ($item.Syft -gt 0) { $validTools += @{Tool="Syft"; Time=[double]($timing.SyftTime -replace 's','')} }
     if ($item.Grype -gt 0) { $validTools += @{Tool="Grype"; Time=[double]($timing.GrypeTime -replace 's','')} }
     if ($item.Cdxgen -gt 0) { $validTools += @{Tool="Cdxgen"; Time=[double]($timing.CdxgenTime -replace 's','')} }
+    if ($item.Scalibr -gt 0) { $validTools += @{Tool="Scalibr"; Time=[double]($timing.ScalibrTime -replace 's','')} }
     
     # Find fastest among valid tools
     if ($validTools.Count -gt 0) {
@@ -385,7 +416,7 @@ $(@(foreach ($item in $ComponentData) {
         $fastestTool = "None"
     }
     
-    "| **$($item.Project)** | $($item.Syft) ($($timing.SyftTime)) | $($item.Grype) ($($timing.GrypeTime)) | $($item.Cdxgen) ($($timing.CdxgenTime)) | $($item.OsvVulns) vulns ($($timing.OsvTime)) | ⚡ $fastestTool |"
+    "| **$($item.Project)** | $($item.Syft) ($($timing.SyftTime)) | $($item.Grype) ($($timing.GrypeTime)) | $($item.Cdxgen) ($($timing.CdxgenTime)) | $($item.Scalibr) ($($timing.ScalibrTime)) | $($item.OsvVulns) vulns ($($timing.OsvTime)) | ⚡ $fastestTool |"
 }) -join "`n")
 
 ---
@@ -400,11 +431,13 @@ $(
     $syftAvg = ($ComponentData | Measure-Object -Property Syft -Average).Average
     $grypeAvg = ($ComponentData | Measure-Object -Property Grype -Average).Average
     $cdxgenAvg = ($ComponentData | Measure-Object -Property Cdxgen -Average).Average
+    $scalibrAvg = ($ComponentData | Measure-Object -Property Scalibr -Average).Average
     
     @(
         "| **Syft** | $($ComponentData[0].Syft) | $($ComponentData[1].Syft) | $($ComponentData[2].Syft) | $([Math]::Round($syftAvg, 1)) |"
         "| **Grype** | $($ComponentData[0].Grype) | $($ComponentData[1].Grype) | $($ComponentData[2].Grype) | $([Math]::Round($grypeAvg, 1)) |"
         "| **Cdxgen** | $($ComponentData[0].Cdxgen) | $($ComponentData[1].Cdxgen) | $($ComponentData[2].Cdxgen) | $([Math]::Round($cdxgenAvg, 1)) |"
+        "| **Scalibr** | $($ComponentData[0].Scalibr) | $($ComponentData[1].Scalibr) | $($ComponentData[2].Scalibr) | $([Math]::Round($scalibrAvg, 1)) |"
     ) -join "`n"
 )
 
@@ -419,22 +452,36 @@ $(@(foreach ($i in 0..($ComponentData.Count - 1)) {
     $syftSec = [double]($timing.SyftTime -replace 's','')
     $grypeSec = [double]($timing.GrypeTime -replace 's','')
     $cdxgenSec = [double]($timing.CdxgenTime -replace 's','')
+    $scalibrSec = [double]($timing.ScalibrTime -replace 's','')
     $osvSec = [double]($timing.OsvTime -replace 's','')
-    $total = $syftSec + $grypeSec + $cdxgenSec + $osvSec
+    $total = $syftSec + $grypeSec + $cdxgenSec + $scalibrSec + $osvSec
     
-    # Find winner for components and speed
-    $maxComp = [Math]::Max([Math]::Max($comp.Syft, $comp.Grype), $comp.Cdxgen)
-    $minTime = [Math]::Min([Math]::Min($syftSec, $grypeSec), $cdxgenSec)
+    # Find winner for components (only among tools that found components)
+    $validComps = @()
+    if ($comp.Syft -gt 0) { $validComps += @{Tool='Syft'; Count=$comp.Syft; Time=$syftSec} }
+    if ($comp.Grype -gt 0) { $validComps += @{Tool='Grype'; Count=$comp.Grype; Time=$grypeSec} }
+    if ($comp.Cdxgen -gt 0) { $validComps += @{Tool='Cdxgen'; Count=$comp.Cdxgen; Time=$cdxgenSec} }
+    if ($comp.Scalibr -gt 0) { $validComps += @{Tool='Scalibr'; Count=$comp.Scalibr; Time=$scalibrSec} }
     
-    $compWinner = if ($comp.Syft -eq $maxComp) { 'Syft' } elseif ($comp.Grype -eq $maxComp) { 'Grype' } else { 'Cdxgen' }
-    $speedWinner = if ($syftSec -eq $minTime) { 'Syft' } elseif ($grypeSec -eq $minTime) { 'Grype' } else { 'Cdxgen' }
+    if ($validComps.Count -gt 0) {
+        $maxComp = ($validComps | Measure-Object -Property Count -Maximum).Maximum
+        $compWinner = ($validComps | Where-Object { $_.Count -eq $maxComp } | Select-Object -First 1).Tool
+        $speedWinner = ($validComps | Sort-Object Time | Select-Object -First 1).Tool
+        $minTime = ($validComps | Sort-Object Time | Select-Object -First 1).Time
+    } else {
+        $maxComp = 0
+        $compWinner = 'None'
+        $speedWinner = 'None'
+        $minTime = 0
+    }
     
     "### $($comp.Project)`n`n" +
     "| Tool | Components Detected | Time | Status |`n" +
     "|------|---------------------|------|--------|`n" +
-    "| **Syft** | $($comp.Syft) $(if ($comp.Syft -eq $maxComp) { '🏆' } else { '' }) | $($timing.SyftTime) $(if ($syftSec -eq $minTime) { '⚡' } else { '' }) | $(if ($comp.Syft -gt 0) { '✅' } else { '❌' }) |`n" +
-    "| **Grype** | $($comp.Grype) $(if ($comp.Grype -eq $maxComp) { '🏆' } else { '' }) | $($timing.GrypeTime) $(if ($grypeSec -eq $minTime) { '⚡' } else { '' }) | $(if ($comp.Grype -gt 0) { '✅' } else { '❌' }) |`n" +
-    "| **Cdxgen** | $($comp.Cdxgen) $(if ($comp.Cdxgen -eq $maxComp) { '🏆' } else { '' }) | $($timing.CdxgenTime) $(if ($cdxgenSec -eq $minTime) { '⚡' } else { '' }) | $(if ($comp.Cdxgen -gt 0) { '✅' } else { '❌' }) |`n" +
+    "| **Syft** | $($comp.Syft) $(if ($comp.Syft -eq $maxComp -and $comp.Syft -gt 0) { '🏆' } else { '' }) | $($timing.SyftTime) $(if ($syftSec -eq $minTime -and $comp.Syft -gt 0) { '⚡' } else { '' }) | $(if ($comp.Syft -gt 0) { '✅' } else { '❌' }) |`n" +
+    "| **Grype** | $($comp.Grype) $(if ($comp.Grype -eq $maxComp -and $comp.Grype -gt 0) { '🏆' } else { '' }) | $($timing.GrypeTime) $(if ($grypeSec -eq $minTime -and $comp.Grype -gt 0) { '⚡' } else { '' }) | $(if ($comp.Grype -gt 0) { '✅' } else { '❌' }) |`n" +
+    "| **Cdxgen** | $($comp.Cdxgen) $(if ($comp.Cdxgen -eq $maxComp -and $comp.Cdxgen -gt 0) { '🏆' } else { '' }) | $($timing.CdxgenTime) $(if ($cdxgenSec -eq $minTime -and $comp.Cdxgen -gt 0) { '⚡' } else { '' }) | $(if ($comp.Cdxgen -gt 0) { '✅' } else { '❌' }) |`n" +
+    "| **Scalibr** | $($comp.Scalibr) $(if ($comp.Scalibr -eq $maxComp -and $comp.Scalibr -gt 0) { '🏆' } else { '' }) | $($timing.ScalibrTime) $(if ($scalibrSec -eq $minTime -and $comp.Scalibr -gt 0) { '⚡' } else { '' }) | $(if ($comp.Scalibr -gt 0) { '✅' } else { '❌' }) |`n" +
     "| **OSV-Scanner** | $($comp.OsvVulns) vulnerabilities | $($timing.OsvTime) $(if ($osvSec -eq $minTime -and $osvSec -gt 0) { '⚡' } else { '' }) | $(if ($comp.OsvVulns -ge 0) { '✅' } else { '❌' }) |`n" +
     "| **Total** | **$maxComp components** | **$([Math]::Round($total, 2))s** | |`n`n" +
     "**Winner - Components:** $compWinner ($maxComp detected)  `n" +

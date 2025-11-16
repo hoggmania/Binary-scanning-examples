@@ -9,13 +9,14 @@ This project provides scripts to automatically generate Software Bill of Materia
 - **Syft** - SBOM generation (CycloneDX JSON format)
 - **Grype** - Vulnerability scanning with SBOM generation (CycloneDX JSON format)
 - **Cdxgen** - Deep binary scanning with evidence collection (CycloneDX JSON format)
+- **OSV-Scalibr** - Comprehensive SBOM generation (SPDX JSON format)
 - **OSV-Scanner** - Vulnerability scanning (Note: incompatible with CycloneDX v1.6, reports 0)
 
 The scripts compare the results from each tool, measuring both accuracy (components detected) and performance (execution time), then generate a comprehensive Markdown analysis report.
 
 ## Features
 
-- ✅ **Multi-tool comparison** - Compare Syft, Grype, Cdxgen, and OSV-Scanner results side-by-side
+- ✅ **Multi-tool comparison** - Compare Syft, Grype, Cdxgen, OSV-Scalibr, and OSV-Scanner results side-by-side
 - ✅ **Automated downloads** - Scripts automatically download test files (OpenCMS) if needed
 - ✅ **Performance metrics** - Track execution time for each tool on each project
 - ✅ **Component counting** - Count and compare detected components across tools
@@ -28,7 +29,7 @@ The scripts compare the results from each tool, measuring both accuracy (compone
 
 ### Required Tools
 
-Install all four scanning tools:
+Install all five scanning tools:
 
 ```bash
 # Syft
@@ -39,6 +40,9 @@ curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh 
 
 # Cdxgen
 npm install -g @cyclonedx/cdxgen
+
+# OSV-Scalibr
+go install github.com/google/osv-scalibr/binary/scalibr@latest
 
 # OSV-Scanner
 go install github.com/google/osv-scanner/cmd/osv-scanner@latest
@@ -149,6 +153,7 @@ The scripts scan for the following binary archive formats:
 
 ## Notes
 
+- **OSV-Scalibr**: Uses SPDX 2.3 JSON format for SBOMs, providing comprehensive package detection with built-in extractors for multiple ecosystems.
 - **OSV-Scanner Incompatibility**: OSV-Scanner v1.6.2 doesn't support CycloneDX v1.6 format from Syft. The scripts detect this and gracefully report 0 vulnerabilities.
 - **Fastest Tool Logic**: Tools that find 0 components are excluded from "fastest tool" calculations.
 - **Large Files**: The OpenCMS files are automatically downloaded and excluded from git via `.gitignore` to avoid repository size issues.
