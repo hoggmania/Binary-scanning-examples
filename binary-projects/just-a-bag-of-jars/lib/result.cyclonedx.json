@@ -1,0 +1,315 @@
+{
+  "$schema": "http://cyclonedx.org/schema/bom-1.6.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2025-11-16T07:35:58Z",
+    "tools": {
+      "components": [
+        {
+          "type": "application",
+          "name": "SCALIBR",
+          "externalReferences": [
+            {
+              "url": "https://github.com/google/osv-scalibr",
+              "type": "website"
+            }
+          ]
+        }
+      ]
+    },
+    "authors": [
+      {}
+    ],
+    "component": {
+      "bom-ref": "0c83dd85-78b2-48d7-9048-6ffb8d3f830f",
+      "type": "",
+      "name": ""
+    }
+  },
+  "components": [
+    {
+      "bom-ref": "52fd5418-add9-413e-96a4-059d08718fc2",
+      "type": "library",
+      "name": "commons-chain:commons-chain",
+      "version": "1.1",
+      "purl": "pkg:maven/commons-chain/commons-chain@1.1",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "commons-chain-1.1.jar"
+          }
+        ]
+      }
+    },
+    {
+      "bom-ref": "3ebe224a-ba57-4de7-a6c6-97196675884d",
+      "type": "library",
+      "name": "commons-digester:commons-digester",
+      "version": "1.8",
+      "purl": "pkg:maven/commons-digester/commons-digester@1.8",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "commons-digester-1.8.jar"
+          }
+        ]
+      }
+    },
+    {
+      "bom-ref": "983c39ab-66b1-49d1-868e-9d5e72d23d66",
+      "type": "library",
+      "name": "commons-lang:commons-lang",
+      "version": "2.4",
+      "purl": "pkg:maven/commons-lang/commons-lang@2.4",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "commons-lang-2.4.jar"
+          },
+          {
+            "location": "commons-lang-2.4.jar\\META-INF\\maven\\commons-lang\\commons-lang\\pom.properties"
+          }
+        ]
+      }
+    },
+    {
+      "bom-ref": "887ddd58-3dc6-4715-868c-ad1a17a408b3",
+      "type": "library",
+      "name": "javax.enterprise:cdi-api",
+      "version": "1.0",
+      "purl": "pkg:maven/javax.enterprise/cdi-api@1.0",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "cdi-api-1.0.jar"
+          },
+          {
+            "location": "cdi-api-1.0.jar\\META-INF\\maven\\javax.enterprise\\cdi-api\\pom.properties"
+          }
+        ]
+      }
+    },
+    {
+      "bom-ref": "0415e090-1be9-479a-a0ab-06c58195f26c",
+      "type": "library",
+      "name": "jsr250-api:jsr250-api",
+      "version": "1.0",
+      "purl": "pkg:maven/jsr250-api/jsr250-api@1.0",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "jsr250-api-1.0.jar"
+          }
+        ]
+      }
+    },
+    {
+      "bom-ref": "b1e629c0-982e-48e2-9f85-56c2d7e1fd60",
+      "type": "library",
+      "name": "org.apache.commons.beanutils:commons-beanutils",
+      "version": "1.7.0",
+      "purl": "pkg:maven/org.apache.commons.beanutils/commons-beanutils@1.7.0",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "commons-beanutils-1.7.0.jar"
+          }
+        ]
+      }
+    },
+    {
+      "bom-ref": "81ad613b-d4e4-42a8-876c-486ac8ee893e",
+      "type": "library",
+      "name": "org.apache.oro:oro",
+      "version": "2.0.8",
+      "purl": "pkg:maven/org.apache.oro/oro@2.0.8",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "oro-2.0.8.jar"
+          }
+        ]
+      }
+    },
+    {
+      "bom-ref": "74f5ce50-5691-433a-aea8-3842329d999a",
+      "type": "library",
+      "name": "org.apache.velocity:velocity",
+      "version": "1.7",
+      "purl": "pkg:maven/org.apache.velocity/velocity@1.7",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "velocity-1.7.jar"
+          }
+        ]
+      }
+    },
+    {
+      "bom-ref": "8a87f39b-363d-4738-aacf-a7b0692568a5",
+      "type": "library",
+      "name": "org.codehaus.plexus:plexus-classworlds",
+      "version": "2.4.2",
+      "purl": "pkg:maven/org.codehaus.plexus/plexus-classworlds@2.4.2",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "plexus-classworlds-2.4.2.jar"
+          },
+          {
+            "location": "plexus-classworlds-2.4.2.jar\\META-INF\\maven\\org.codehaus.plexus\\plexus-classworlds\\pom.properties"
+          }
+        ]
+      }
+    },
+    {
+      "bom-ref": "fcf5217f-7e54-4e43-bbec-4c79474e09b1",
+      "type": "library",
+      "name": "org.codehaus.plexus:plexus-i18n",
+      "version": "1.0-beta-10",
+      "purl": "pkg:maven/org.codehaus.plexus/plexus-i18n@1.0-beta-10",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "plexus-i18n-1.0-beta-10.jar"
+          },
+          {
+            "location": "plexus-i18n-1.0-beta-10.jar\\META-INF\\maven\\org.codehaus.plexus\\plexus-i18n\\pom.properties"
+          }
+        ]
+      }
+    },
+    {
+      "bom-ref": "45f69371-79d1-4958-a8f8-8f0a07390e65",
+      "type": "library",
+      "name": "org.codehaus.plexus:plexus-interpolation",
+      "version": "1.16",
+      "purl": "pkg:maven/org.codehaus.plexus/plexus-interpolation@1.16",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "plexus-interpolation-1.16.jar"
+          },
+          {
+            "location": "plexus-interpolation-1.16.jar\\META-INF\\maven\\org.codehaus.plexus\\plexus-interpolation\\pom.properties"
+          }
+        ]
+      }
+    },
+    {
+      "bom-ref": "d353446c-3c0c-44dc-a156-d6013692e2ae",
+      "type": "library",
+      "name": "org.dom4j:dom4j",
+      "version": "1.1",
+      "purl": "pkg:maven/org.dom4j/dom4j@1.1",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "dom4j-1.1.jar"
+          }
+        ]
+      }
+    },
+    {
+      "bom-ref": "43484c4b-920a-4f19-9423-e6d6a620afca",
+      "type": "library",
+      "name": "org.eclipse.aether:aether-api",
+      "version": "0.9.0.M2",
+      "purl": "pkg:maven/org.eclipse.aether/aether-api@0.9.0.M2",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "aether-api-0.9.0.M2.jar"
+          },
+          {
+            "location": "aether-api-0.9.0.M2.jar\\META-INF\\maven\\org.eclipse.aether\\aether-api\\pom.properties"
+          }
+        ]
+      }
+    },
+    {
+      "bom-ref": "c100309e-1714-40ca-9d78-eabb35fdb2e5",
+      "type": "library",
+      "name": "org.eclipse.aether:aether-impl",
+      "version": "0.9.0.M2",
+      "purl": "pkg:maven/org.eclipse.aether/aether-impl@0.9.0.M2",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "aether-impl-0.9.0.M2.jar"
+          },
+          {
+            "location": "aether-impl-0.9.0.M2.jar\\META-INF\\maven\\org.eclipse.aether\\aether-impl\\pom.properties"
+          }
+        ]
+      }
+    },
+    {
+      "bom-ref": "df898fc9-b7a7-4666-a807-97ed98d0b8ec",
+      "type": "library",
+      "name": "org.eclipse.aether:aether-spi",
+      "version": "0.9.0.M2",
+      "purl": "pkg:maven/org.eclipse.aether/aether-spi@0.9.0.M2",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "aether-spi-0.9.0.M2.jar"
+          },
+          {
+            "location": "aether-spi-0.9.0.M2.jar\\META-INF\\maven\\org.eclipse.aether\\aether-spi\\pom.properties"
+          }
+        ]
+      }
+    },
+    {
+      "bom-ref": "82c5aabb-7b9c-4fad-90d6-348e08db9940",
+      "type": "library",
+      "name": "org.sonatype.plexus:plexus-cipher",
+      "version": "1.4",
+      "purl": "pkg:maven/org.sonatype.plexus/plexus-cipher@1.4",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "plexus-cipher-1.4.jar"
+          },
+          {
+            "location": "plexus-cipher-1.4.jar\\META-INF\\maven\\org.sonatype.plexus\\plexus-cipher\\pom.properties"
+          }
+        ]
+      }
+    },
+    {
+      "bom-ref": "5f3d33a5-51d9-48f5-a268-e6d37364554d",
+      "type": "library",
+      "name": "org.sonatype.plexus:plexus-sec-dispatcher",
+      "version": "1.3",
+      "purl": "pkg:maven/org.sonatype.plexus/plexus-sec-dispatcher@1.3",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "plexus-sec-dispatcher-1.3.jar"
+          },
+          {
+            "location": "plexus-sec-dispatcher-1.3.jar\\META-INF\\maven\\org.sonatype.plexus\\plexus-sec-dispatcher\\pom.properties"
+          }
+        ]
+      }
+    },
+    {
+      "bom-ref": "fff2ac66-7b3d-429f-931a-0170fc4aad96",
+      "type": "library",
+      "name": "velocity-tools:velocity-tools",
+      "version": "2.0",
+      "purl": "pkg:maven/velocity-tools/velocity-tools@2.0",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "velocity-tools-2.0.jar"
+          }
+        ]
+      }
+    }
+  ]
+}

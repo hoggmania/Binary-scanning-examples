@@ -4,10 +4,7 @@ opencms-exploded/opencms.war
 code-with-quarkus/*
 
 # Generated SBOM files
-generate-sboms/*.json
-generate-sboms/*.log
-generate-sboms/*.atom
-generate-sboms/*.slices.json
+generate-sboms/*
 
 # Build/download artifacts
 *.msi

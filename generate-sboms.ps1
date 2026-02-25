@@ -4,9 +4,10 @@
 
 .DESCRIPTION
     Scans directories for binary archives (JARs, WARs, EARs, ZIPs, etc.) and generates:
-    - SBOM files using Syft, Grype, and Cdxgen (all in CycloneDX JSON format)
-    - SBOM files using OSV-Scalibr (SPDX JSON format)
-    - Vulnerability reports using OSV-Scanner (note: incompatible with CycloneDX, reports 0)
+    - SBOM files using Syft, Grype, Cdxgen, Trivy, and Vet (CycloneDX JSON format)
+    - SBOM files using OSV-Scalibr (CycloneDX JSON format)
+    - SBOM files using Bei (JSON output)
+    - Vulnerability reports using OSV-Scanner (note: may report 0 when CycloneDX is unsupported)
     - Comparative analysis report in Markdown format
 
 .PARAMETER Recursive
@@ -18,6 +19,7 @@
 .PARAMETER SkipGeneration
     Skip SBOM generation and cleanup. Only regenerate the analysis report from existing SBOM files.
     Useful when you want to update the report without re-running the time-consuming SBOM generation.
+
 
 .EXAMPLE
     .\generate-sboms.ps1
@@ -34,18 +36,41 @@
 .EXAMPLE
     .\generate-sboms.ps1 -Recursive
     Recursively scans all subdirectories for binary archives.
+
+.EXAMPLE
+    .\generate-sboms.ps1 -Tool Syft
+    Runs only Syft for SBOM generation and reporting.
+
+.EXAMPLE
+    .\generate-sboms.ps1 -Tool Trivy
+    Runs only Trivy for SBOM generation and reporting.
 #>
 
 param(
     [switch]$Recursive = $false,
     [switch]$SkipAnalysis = $false,
-    [switch]$SkipGeneration = $false
+    [switch]$SkipGeneration = $false,
+    [switch]$ReportOnly = $false,
+    [switch]$TestOnly = $false,
+    [ValidateSet("Syft","Grype","Cdxgen","Scalibr","Trivy","Bei","Vet","OsvScanner", "")]
+    [string]$Tool = ""
 )
+
+# ==========================================
+# Harmonise convenience switches
+if ($ReportOnly) {
+    $SkipGeneration = $true
+}
+if ($TestOnly) {
+    $SkipAnalysis = $true
+}
 
 # ==========================================
 # CONFIGURATION
 # ==========================================
 $Root = Get-Location
+$SourceProjectsDir = Join-Path $Root "source-projects"
+$BinaryProjectsDir = Join-Path $Root "binary-projects"
 $OutputDir = Join-Path $Root "generate-sboms"
 $SummaryFile = Join-Path $OutputDir "sbom-summary.json"
 $LogFile = Join-Path $OutputDir "run.log"
@@ -59,8 +84,8 @@ if (!(Test-Path $OutputDir)) { New-Item -ItemType Directory -Force -Path $Output
 # ==========================================
 # DOWNLOAD TEST FILES
 # ==========================================
-$ZipDir = Join-Path $Root "opencms-zip-only"
-$WarDir = Join-Path $Root "opencms-exploded"
+$ZipDir = Join-Path $BinaryProjectsDir "opencms-zip-only"
+$WarDir = Join-Path $BinaryProjectsDir "opencms-exploded"
 $ZipFile = Join-Path $ZipDir "opencms-9.5.0.zip"
 $WarFile = Join-Path $WarDir "opencms.war"
 $DownloadUrl = "https://github.com/alkacon/opencms-core/releases/download/build_9_5_0/opencms-9.5.0.zip"
@@ -106,12 +131,21 @@ if ((Test-Path $ZipFile) -and !(Test-Path $WarFile)) {
 # ==========================================
 # CLEANUP PREVIOUS RUN
 # ==========================================
-if (-not $SkipGeneration) {
+if ($ReportOnly -and $TestOnly) {
+    Write-Host "Cannot use -ReportOnly and -TestOnly together." -ForegroundColor Red
+    exit 1
+}
+
+# Only run SBOM generation if not reporting only
+if (-not $SkipGeneration -and -not $ReportOnly) {
     Write-Host "Cleaning up previous run files..." -ForegroundColor Cyan
     Get-ChildItem -Path $OutputDir -Filter "*-syft-sbom.json" | Remove-Item -Force
     Get-ChildItem -Path $OutputDir -Filter "*-grype-sbom.json" | Remove-Item -Force
     Get-ChildItem -Path $OutputDir -Filter "*-cdxgen-sbom.json" | Remove-Item -Force
     Get-ChildItem -Path $OutputDir -Filter "*-scalibr-sbom.json" | Remove-Item -Force
+    Get-ChildItem -Path $OutputDir -Filter "*-trivy-sbom.json" | Remove-Item -Force
+    Get-ChildItem -Path $OutputDir -Filter "*-bei-sbom.json*" | Remove-Item -Force -Recurse
+    Get-ChildItem -Path $OutputDir -Filter "*-vet-sbom.json" | Remove-Item -Force
     Get-ChildItem -Path $OutputDir -Filter "*-osv-scanner.json" | Remove-Item -Force
     if (Test-Path $SummaryFile) { Remove-Item $SummaryFile -Force }
 } else {
@@ -134,27 +168,75 @@ function Write-Log {
     "$((Get-Date))  $Message" | Out-File -Append -FilePath $LogFile
 }
 
+function Write-CommandLog {
+    param(
+        [Parameter(Mandatory)][string]$CommandText,
+        [ValidateSet("Start","End")][string]$Phase = "Start",
+        [string]$Result = "Unknown"
+    )
+
+    $border = '-' * 80
+
+    if ($Phase -eq "Start") {
+        Write-Log $border
+        Write-Log "Executing command:"
+        Write-Log "    $CommandText"
+    }
+    else {
+        $statusMessage = if ([string]::IsNullOrWhiteSpace($Result) -or $Result -eq "Unknown") {
+            "Command completed"
+        } else {
+            "Command completed with status: $Result"
+        }
+        Write-Log $statusMessage
+        Write-Log "    $CommandText"
+        Write-Log $border
+    }
+}
+
 if (-not $SkipGeneration) {
 # ==========================================
-# Get directories containing binaries
+# Get directories containing binaries or source projects
 # ==========================================
-if ($Recursive) {
-    $Dirs = Get-ChildItem -Path $Root -Directory -Recurse
-} else {
-    $Dirs = Get-ChildItem -Path $Root -Directory
+$BinaryDirsToScan = @()
+$SourceDirsToScan = @()
+
+# Scan binary projects directory
+if (Test-Path $BinaryProjectsDir) {
+    if ($Recursive) {
+        $BinaryDirs = Get-ChildItem -Path $BinaryProjectsDir -Directory -Recurse
+    } else {
+        $BinaryDirs = Get-ChildItem -Path $BinaryProjectsDir -Directory
+    }
+    
+    foreach ($Dir in $BinaryDirs) {
+        $HasBinaries = Get-ChildItem -Path $Dir.FullName -Recurse -File -Include *.jar,*.war,*.ear,*.zip,*.tar,*.tar.gz,*.tgz,*.rpm,*.deb,*.aar -ErrorAction SilentlyContinue
+        if ($HasBinaries) { $BinaryDirsToScan += $Dir }
+    }
 }
 
-# Exclude the output directory itself
-$Dirs = $Dirs | Where-Object { $_.FullName -ne $OutputDir }
-
-# Only directories containing binaries
-$DirsToScan = @()
-foreach ($Dir in $Dirs) {
-    $HasBinaries = Get-ChildItem -Path $Dir.FullName -Recurse -File -Include *.jar,*.war,*.ear,*.zip,*.tar,*.tar.gz,*.tgz,*.rpm,*.deb,*.aar -ErrorAction SilentlyContinue
-    if ($HasBinaries) { $DirsToScan += $Dir }
+# Scan source projects directory
+if (Test-Path $SourceProjectsDir) {
+    if ($Recursive) {
+        $SourceDirs = Get-ChildItem -Path $SourceProjectsDir -Directory -Recurse
+    } else {
+        $SourceDirs = Get-ChildItem -Path $SourceProjectsDir -Directory
+    }
+    
+    foreach ($Dir in $SourceDirs) {
+        $HasMavenProject = Test-Path (Join-Path $Dir.FullName "pom.xml")
+        $HasGradleProject = (Test-Path (Join-Path $Dir.FullName "build.gradle")) -or (Test-Path (Join-Path $Dir.FullName "build.gradle.kts"))
+        
+        if ($HasMavenProject -or $HasGradleProject) { 
+            $SourceDirsToScan += $Dir 
+        }
+    }
 }
 
-Write-Log "Found $($DirsToScan.Count) directories with binaries to scan."
+Write-Log "Found $($BinaryDirsToScan.Count) binary directories and $($SourceDirsToScan.Count) source directories to scan."
+
+# Combine for processing
+$DirsToScan = $BinaryDirsToScan + $SourceDirsToScan
 
 # ==========================================
 # Generate SBOMs using all tools
@@ -171,12 +253,18 @@ foreach ($Dir in $DirsToScan) {
     $GrypeOut = Join-Path $OutputDir "$Name-grype-sbom.json"
     $CdxgenOut = Join-Path $OutputDir "$Name-cdxgen-sbom.json"
     $ScalibrOut = Join-Path $OutputDir "$Name-scalibr-sbom.json"
+    $TrivyOut = Join-Path $OutputDir "$Name-trivy-sbom.json"
+    $BeiOut = Join-Path $OutputDir "$Name-bei-sbom.json"
+    $VetOut = Join-Path $OutputDir "$Name-vet-sbom.json"
     $OsvOut = Join-Path $OutputDir "$Name-osv-scanner.json"
 
     # Remove existing files if present
     foreach ($f in @($SyftOut, $GrypeOut, $CdxgenOut, $ScalibrOut, $OsvOut)) {
         if (Test-Path $f) { Remove-Item $f -Force }
     }
+    if (Test-Path $TrivyOut) { Remove-Item $TrivyOut -Force }
+    if (Test-Path $BeiOut) { Remove-Item $BeiOut -Force }
+    if (Test-Path $VetOut) { Remove-Item $VetOut -Force }
 
     # Initialize status for summary
     $Status = [ordered]@{
@@ -189,112 +277,282 @@ foreach ($Dir in $DirsToScan) {
         CdxgenTime = ""
         Scalibr  = ""
         ScalibrTime = ""
+        Trivy    = ""
+        TrivyTime = ""
+        Bei      = ""
+        BeiTime  = ""
+        Vet      = ""
+        VetTime  = ""
         OsvScanner = ""
         OsvTime = ""
     }
 
     # -------------------------------
+    # 4) Trivy (CycloneDX SBOM generation)
+    # -------------------------------
+    if (($Tool -eq "Trivy") -or ($Tool -eq "")) {
+        $TrivyStart = Get-Date
+        # Trivy can generate CycloneDX SBOMs for directories
+        $trivyCmd = "trivy fs --format cyclonedx --output `"$TrivyOut`" `"$DirPath`""
+        $trivyResult = "Unknown"
+        Write-CommandLog -CommandText $trivyCmd
+        try {
+            trivy fs --format cyclonedx --output "$TrivyOut" "$DirPath" | Out-Null
+            $TrivyDuration = (Get-Date) - $TrivyStart
+            $Status.TrivyTime = "$([Math]::Round($TrivyDuration.TotalSeconds, 2))s"
+            Write-Log "Trivy SBOM generated: $TrivyOut (Time: $($Status.TrivyTime))"
+            $Status.Trivy = "Success"
+            $trivyResult = "Success"
+        } catch {
+            $TrivyDuration = (Get-Date) - $TrivyStart
+            $Status.TrivyTime = "$([Math]::Round($TrivyDuration.TotalSeconds, 2))s"
+            Write-Log "ERROR: Trivy failed for $DirPath - $($_.Exception.Message)"
+            $Status.Trivy = "Failed"
+            $trivyResult = "Failed"
+        } finally {
+            Write-CommandLog -CommandText $trivyCmd -Phase End -Result $trivyResult
+        }
+    }
+
+
+    # -------------------------------
     # 1) Syft
     # -------------------------------
-    $SyftStart = Get-Date
-    try {
+    if (($Tool -eq "Syft") -or ($Tool -eq "")) {
+        $SyftStart = Get-Date
         # Generate SBOM in CycloneDX JSON format
-        syft "dir:$DirPath" -o cyclonedx-json | Out-File $SyftOut
-        $SyftDuration = (Get-Date) - $SyftStart
-        $Status.SyftTime = "$([Math]::Round($SyftDuration.TotalSeconds, 2))s"
-        Write-Log "Syft SBOM generated: $SyftOut (Time: $($Status.SyftTime))"
-        $Status.Syft = "Success"
-    } catch {
-        $SyftDuration = (Get-Date) - $SyftStart
-        $Status.SyftTime = "$([Math]::Round($SyftDuration.TotalSeconds, 2))s"
-        Write-Log "ERROR: Syft failed for $DirPath - $($_.Exception.Message)"
-        $Status.Syft = "Failed"
+        $syftCmd = "syft `"dir:$DirPath`" -o cyclonedx-json"
+        $syftResult = "Unknown"
+        Write-CommandLog -CommandText $syftCmd
+        try {
+            syft "dir:$DirPath" -o cyclonedx-json | Out-File $SyftOut
+            $SyftDuration = (Get-Date) - $SyftStart
+            $Status.SyftTime = "$([Math]::Round($SyftDuration.TotalSeconds, 2))s"
+            Write-Log "Syft SBOM generated: $SyftOut (Time: $($Status.SyftTime))"
+            $Status.Syft = "Success"
+            $syftResult = "Success"
+        } catch {
+            $SyftDuration = (Get-Date) - $SyftStart
+            $Status.SyftTime = "$([Math]::Round($SyftDuration.TotalSeconds, 2))s"
+            Write-Log "ERROR: Syft failed for $DirPath - $($_.Exception.Message)"
+            $Status.Syft = "Failed"
+            $syftResult = "Failed"
+        } finally {
+            Write-CommandLog -CommandText $syftCmd -Phase End -Result $syftResult
+        }
     }
+
 
     # -------------------------------
     # 2) Grype
     # -------------------------------
-    $GrypeStart = Get-Date
-    try {
-        grype "dir:$DirPath" -o cyclonedx-json | Out-File $GrypeOut
-        $GrypeDuration = (Get-Date) - $GrypeStart
-        $Status.GrypeTime = "$([Math]::Round($GrypeDuration.TotalSeconds, 2))s"
-        Write-Log "Grype SBOM generated: $GrypeOut (Time: $($Status.GrypeTime))"
-        $Status.Grype = "Success"
-    } catch {
-        $GrypeDuration = (Get-Date) - $GrypeStart
-        $Status.GrypeTime = "$([Math]::Round($GrypeDuration.TotalSeconds, 2))s"
-        Write-Log "ERROR: Grype failed for $DirPath - $($_.Exception.Message)"
-        $Status.Grype = "Failed"
+    if (($Tool -eq "Grype") -or ($Tool -eq "")) {
+        $GrypeStart = Get-Date
+        $grypeCmd = "grype `"dir:$DirPath`" -o cyclonedx-json"
+        $grypeResult = "Unknown"
+        Write-CommandLog -CommandText $grypeCmd
+        try {
+            grype "dir:$DirPath" -o cyclonedx-json | Out-File $GrypeOut
+            $GrypeDuration = (Get-Date) - $GrypeStart
+            $Status.GrypeTime = "$([Math]::Round($GrypeDuration.TotalSeconds, 2))s"
+            Write-Log "Grype SBOM generated: $GrypeOut (Time: $($Status.GrypeTime))"
+            $Status.Grype = "Success"
+            $grypeResult = "Success"
+        } catch {
+            $GrypeDuration = (Get-Date) - $GrypeStart
+            $Status.GrypeTime = "$([Math]::Round($GrypeDuration.TotalSeconds, 2))s"
+            Write-Log "ERROR: Grype failed for $DirPath - $($_.Exception.Message)"
+            $Status.Grype = "Failed"
+            $grypeResult = "Failed"
+        } finally {
+            Write-CommandLog -CommandText $grypeCmd -Phase End -Result $grypeResult
+        }
     }
+
 
     # -------------------------------
     # 3) Cdxgen (specialized for binaries in JARs/WARs/EARs/ZIPs/RPMs)
     # -------------------------------
-    $CdxgenStart = Get-Date
-    try {
-        # cdxgen automatically detects and scans binaries within archives
-        # --deep flag enables deep scanning of nested archives
-        # --evidence flag includes evidence and occurrences for components
-        cdxgen -r --deep --evidence -o $CdxgenOut $DirPath
-        $CdxgenDuration = (Get-Date) - $CdxgenStart
-        $Status.CdxgenTime = "$([Math]::Round($CdxgenDuration.TotalSeconds, 2))s"
-        Write-Log "Cdxgen SBOM generated: $CdxgenOut (Time: $($Status.CdxgenTime))"
-        $Status.Cdxgen = "Success"
-    } catch {
-        $CdxgenDuration = (Get-Date) - $CdxgenStart
-        $Status.CdxgenTime = "$([Math]::Round($CdxgenDuration.TotalSeconds, 2))s"
-        Write-Log "ERROR: Cdxgen failed for $DirPath - $($_.Exception.Message)"
-        $Status.Cdxgen = "Failed"
+    if (($Tool -eq "Cdxgen") -or ($Tool -eq "")) {
+        $CdxgenStart = Get-Date
+        $cdxgenResult = "Unknown"
+        $cdxgenCmd = $null
+        try {
+            # Determine if this is a source project or binary project
+            $isSourceProject = $SourceDirsToScan -contains $Dir
+            
+            if ($isSourceProject) {
+                # For source projects: use basic flags without deep/evidence
+                $cdxgenCmd = "cdxgen -r -o `"$CdxgenOut`" `"$DirPath`""
+                Write-Log "Executing cdxgen in source mode."
+                Write-CommandLog -CommandText $cdxgenCmd
+                cdxgen -r -o $CdxgenOut $DirPath
+            } else {
+                # For binary projects: use deep scanning and evidence collection
+                # --deep flag enables deep scanning of nested archives
+                # --evidence flag includes evidence and occurrences for components
+                $cdxgenCmd = "cdxgen -r --deep --evidence -o `"$CdxgenOut`" `"$DirPath`""
+                Write-Log "Executing cdxgen in binary mode."
+                Write-CommandLog -CommandText $cdxgenCmd
+                cdxgen -r --deep --evidence -o $CdxgenOut $DirPath
+            }
+            $CdxgenDuration = (Get-Date) - $CdxgenStart
+            $Status.CdxgenTime = "$([Math]::Round($CdxgenDuration.TotalSeconds, 2))s"
+            Write-Log "Cdxgen SBOM generated: $CdxgenOut (Time: $($Status.CdxgenTime))"
+            $Status.Cdxgen = "Success"
+            $cdxgenResult = "Success"
+        } catch {
+            $CdxgenDuration = (Get-Date) - $CdxgenStart
+            $Status.CdxgenTime = "$([Math]::Round($CdxgenDuration.TotalSeconds, 2))s"
+            Write-Log "ERROR: Cdxgen failed for $DirPath - $($_.Exception.Message)"
+            $Status.Cdxgen = "Failed"
+            $cdxgenResult = "Failed"
+        } finally {
+            if ($null -ne $cdxgenCmd -and $cdxgenCmd -ne "") {
+                Write-CommandLog -CommandText $cdxgenCmd -Phase End -Result $cdxgenResult
+            }
+        }
+    }
+
+
+    # -------------------------------
+    # 4) OSV-Scalibr (CycloneDX SBOM generation)
+    # -------------------------------
+    if (($Tool -eq "Scalibr") -or ($Tool -eq "")) {
+        $ScalibrStart = Get-Date
+        # OSV-Scalibr generates CycloneDX format SBOMs
+        $scalibrCmd = "scalibr -o `"cdx-json=$ScalibrOut`" `"$DirPath`""
+        $scalibrResult = "Unknown"
+        Write-CommandLog -CommandText $scalibrCmd
+        try {
+            scalibr -o "cdx-json=$ScalibrOut" "$DirPath" 2>&1 | Out-Null
+            $ScalibrDuration = (Get-Date) - $ScalibrStart
+            $Status.ScalibrTime = "$([Math]::Round($ScalibrDuration.TotalSeconds, 2))s"
+            Write-Log "OSV-Scalibr SBOM generated: $ScalibrOut (Time: $($Status.ScalibrTime))"
+            $Status.Scalibr = "Success"
+            $scalibrResult = "Success"
+        } catch {
+            $ScalibrDuration = (Get-Date) - $ScalibrStart
+            $Status.ScalibrTime = "$([Math]::Round($ScalibrDuration.TotalSeconds, 2))s"
+            Write-Log "ERROR: OSV-Scalibr failed for $DirPath - $($_.Exception.Message)"
+            $Status.Scalibr = "Failed"
+            $scalibrResult = "Failed"
+        } finally {
+            Write-CommandLog -CommandText $scalibrCmd -Phase End -Result $scalibrResult
+        }
+    }
+
+
+    # -------------------------------
+    # 6) Bei (SBOM generation)
+    # -------------------------------
+    if (($Tool -eq "Bei") -or ($Tool -eq "")) {
+        $BeiStart = Get-Date
+        $beiCmd = "bei sbom --additional-args=`"`" --output=`"$BeiOut`""
+        $beiResult = "Unknown"
+        Write-CommandLog -CommandText $beiCmd
+        try {
+            # Change to the directory and run bei
+            Push-Location $DirPath
+            $beiExitCode = 0
+            bei sbom --additional-args="" --output="$BeiOut" 2>&1 | Out-Null
+            $beiExitCode = $LASTEXITCODE
+            Pop-Location
+            $BeiDuration = (Get-Date) - $BeiStart
+            $Status.BeiTime = "$([Math]::Round($BeiDuration.TotalSeconds, 2))s"
+            if ($beiExitCode -eq 0 -and (Test-Path $BeiOut)) {
+                Write-Log "Bei SBOM generated: $BeiOut (Time: $($Status.BeiTime))"
+                $Status.Bei = "Success"
+                $beiResult = "Success"
+            } else {
+                Write-Log "ERROR: Bei failed for $DirPath (exit code: $beiExitCode)"
+                $Status.Bei = "Failed"
+                $beiResult = "Failed"
+            }
+        } catch {
+            if ((Get-Location).Path -ne $PSScriptRoot) { Pop-Location }
+            $BeiDuration = (Get-Date) - $BeiStart
+            $Status.BeiTime = "$([Math]::Round($BeiDuration.TotalSeconds, 2))s"
+            Write-Log "ERROR: Bei failed for $DirPath - $($_.Exception.Message)"
+            $Status.Bei = "Failed"
+            $beiResult = "Failed"
+        } finally {
+            Write-CommandLog -CommandText $beiCmd -Phase End -Result $beiResult
+        }
     }
 
     # -------------------------------
-    # 4) OSV-Scalibr (SPDX SBOM generation)
+    # 7) Vet (SBOM generation)
     # -------------------------------
-    $ScalibrStart = Get-Date
-    try {
-        # OSV-Scalibr generates SPDX format SBOMs
-        scalibr -o "spdx23-json=$ScalibrOut" "$DirPath" 2>&1 | Out-Null
-        $ScalibrDuration = (Get-Date) - $ScalibrStart
-        $Status.ScalibrTime = "$([Math]::Round($ScalibrDuration.TotalSeconds, 2))s"
-        Write-Log "OSV-Scalibr SBOM generated: $ScalibrOut (Time: $($Status.ScalibrTime))"
-        $Status.Scalibr = "Success"
-    } catch {
-        $ScalibrDuration = (Get-Date) - $ScalibrStart
-        $Status.ScalibrTime = "$([Math]::Round($ScalibrDuration.TotalSeconds, 2))s"
-        Write-Log "ERROR: OSV-Scalibr failed for $DirPath - $($_.Exception.Message)"
-        $Status.Scalibr = "Failed"
+    if (($Tool -eq "Vet") -or ($Tool -eq "")) {
+        $VetStart = Get-Date
+        $vetCmd = "vet scan -D `"$DirPath`" --report-cdx=`"$VetOut`""
+        $vetResult = "Unknown"
+        Write-CommandLog -CommandText $vetCmd
+        try {
+            vet scan -D "$DirPath" --report-cdx="$VetOut" 2>&1 | Out-Null
+            $vetExitCode = $LASTEXITCODE
+            $VetDuration = (Get-Date) - $VetStart
+            $Status.VetTime = "$([Math]::Round($VetDuration.TotalSeconds, 2))s"
+            if ((Test-Path $VetOut) -and ($vetExitCode -eq 0)) {
+                Write-Log "Vet SBOM generated: $VetOut (Time: $($Status.VetTime))"
+                $Status.Vet = "Success"
+                $vetResult = "Success"
+            } else {
+                Write-Log "ERROR: Vet did not produce SBOM for $DirPath (exit code: $vetExitCode)"
+                $Status.Vet = "Failed"
+                $vetResult = "Failed"
+            }
+        } catch {
+            $VetDuration = (Get-Date) - $VetStart
+            $Status.VetTime = "$([Math]::Round($VetDuration.TotalSeconds, 2))s"
+            Write-Log "ERROR: Vet failed for $DirPath - $($_.Exception.Message)"
+            $Status.Vet = "Failed"
+            $vetResult = "Failed"
+        } finally {
+            Write-CommandLog -CommandText $vetCmd -Phase End -Result $vetResult
+        }
     }
+
 
     # -------------------------------
     # 5) OSV-Scanner (vulnerability scanning using Syft SBOM)
     # -------------------------------
-    $OsvStart = Get-Date
-    try {
+    if (($Tool -eq "OsvScanner") -or ($Tool -eq "")) {
+        $OsvStart = Get-Date
         # OSV-Scanner scans SBOMs for vulnerabilities using Google's OSV database
         # Note: OSV-Scanner doesn't support Syft's CycloneDX version, so this will fail
         # We'll catch the error and report 0 vulnerabilities
-        osv-scanner --sbom $SyftOut --format json 2>&1 | Out-File $OsvOut
-        $OsvDuration = (Get-Date) - $OsvStart
-        $Status.OsvTime = "$([Math]::Round($OsvDuration.TotalSeconds, 2))s"
-        
-        # Check if OSV-Scanner actually found anything or failed
-        $osvContent = Get-Content $OsvOut -Raw
-        if ($osvContent -match "Failed to parse SBOM" -or $osvContent -match "No package sources found") {
-            Write-Log "OSV-Scanner incompatible with CycloneDX format - reporting 0 vulnerabilities: $OsvOut (Time: $($Status.OsvTime))"
-            # Write empty result
+        $osvCmd = "osv-scanner --sbom `"$SyftOut`" --format json"
+        $osvResult = "Unknown"
+        Write-CommandLog -CommandText $osvCmd
+        try {
+            osv-scanner --sbom $SyftOut --format json 2>&1 | Out-File $OsvOut
+            $OsvDuration = (Get-Date) - $OsvStart
+            $Status.OsvTime = "$([Math]::Round($OsvDuration.TotalSeconds, 2))s"
+            
+            # Check if OSV-Scanner actually found anything or failed
+            $osvContent = Get-Content $OsvOut -Raw
+            if ($osvContent -match "Failed to parse SBOM" -or $osvContent -match "No package sources found") {
+                Write-Log "OSV-Scanner incompatible with CycloneDX format - reporting 0 vulnerabilities: $OsvOut (Time: $($Status.OsvTime))"
+                # Write empty result
+                '{"results": []}' | Out-File $OsvOut
+            } else {
+                Write-Log "OSV-Scanner results generated: $OsvOut (Time: $($Status.OsvTime))"
+            }
+            $Status.OsvScanner = "Success"
+            $osvResult = "Success"
+        } catch {
+            $OsvDuration = (Get-Date) - $OsvStart
+            $Status.OsvTime = "$([Math]::Round($OsvDuration.TotalSeconds, 2))s"
+            Write-Log "ERROR: OSV-Scanner failed for $DirPath - $($_.Exception.Message)"
+            # Write empty result for failed case
             '{"results": []}' | Out-File $OsvOut
-        } else {
-            Write-Log "OSV-Scanner results generated: $OsvOut (Time: $($Status.OsvTime))"
+            $Status.OsvScanner = "Failed"
+            $osvResult = "Failed"
+        } finally {
+            Write-CommandLog -CommandText $osvCmd -Phase End -Result $osvResult
         }
-        $Status.OsvScanner = "Success"
-    } catch {
-        $OsvDuration = (Get-Date) - $OsvStart
-        $Status.OsvTime = "$([Math]::Round($OsvDuration.TotalSeconds, 2))s"
-        Write-Log "ERROR: OSV-Scanner failed for $DirPath - $($_.Exception.Message)"
-        # Write empty result for failed case
-        '{"results": []}' | Out-File $OsvOut
-        $Status.OsvScanner = "Failed"
     }
 
     # Append result to summary
@@ -310,354 +568,21 @@ Write-Log "JSON summary report written to $SummaryFile"
 
 } # End of SkipGeneration conditional
 
-# ==========================================
-# Generate Markdown Report
-# ==========================================
-if (-not $SkipAnalysis) {
-Write-Log "Generating markdown report..."
-
-$ReportFile = Join-Path $OutputDir "SBOM-Analysis-Report.md"
-
-# Collect component counts from all SBOMs
-$ComponentData = @()
-foreach ($project in @("just-a-bag-of-jars", "opencms-exploded", "opencms-zip-only", "code-with-quarkus")) {
-    $syftFile = Join-Path $OutputDir "$project-syft-sbom.json"
-    $grypeFile = Join-Path $OutputDir "$project-grype-sbom.json"
-    $cdxgenFile = Join-Path $OutputDir "$project-cdxgen-sbom.json"
-    $scalibrFile = Join-Path $OutputDir "$project-scalibr-sbom.json"
-    $osvFile = Join-Path $OutputDir "$project-osv-scanner.json"
-    
-    if (Test-Path $syftFile) {
-        $syftData = Get-Content $syftFile | ConvertFrom-Json
-        $syftCount = $syftData.components.Count
-    } else { $syftCount = 0 }
-    
-    if (Test-Path $grypeFile) {
-        $grypeData = Get-Content $grypeFile | ConvertFrom-Json
-        $grypeCount = $grypeData.components.Count
-    } else { $grypeCount = 0 }
-    
-    if (Test-Path $cdxgenFile) {
-        $cdxgenData = Get-Content $cdxgenFile | ConvertFrom-Json
-        $cdxgenCount = $cdxgenData.components.Count
-    } else { $cdxgenCount = 0 }
-    
-    # OSV-Scalibr uses SPDX format - count packages
-    if (Test-Path $scalibrFile) {
-        $scalibrData = Get-Content $scalibrFile | ConvertFrom-Json
-        $scalibrCount = if ($scalibrData.packages) { $scalibrData.packages.Count } else { 0 }
-    } else { $scalibrCount = 0 }
-    
-    # OSV-Scanner output format is different - count vulnerabilities
-    if (Test-Path $osvFile) {
-        $osvData = Get-Content $osvFile | ConvertFrom-Json
-        $osvVulnCount = if ($osvData.results) { $osvData.results.Count } else { 0 }
-    } else { $osvVulnCount = 0 }
-    
-    $ComponentData += [PSCustomObject]@{
-        Project = $project
-        Syft = $syftCount
-        Grype = $grypeCount
-        Cdxgen = $cdxgenCount
-        Scalibr = $scalibrCount
-        OsvVulns = $osvVulnCount
-    }
-}
-
-# Get timing data from summary
-# If we skipped generation, load the summary from the JSON file
-if ($SkipGeneration -and (Test-Path $SummaryFile)) {
-    $Summary = Get-Content $SummaryFile | ConvertFrom-Json
-}
-
-$TimingData = $Summary | ForEach-Object {
-    [PSCustomObject]@{
-        Project = ($_.Directory -split '\\')[-1]
-        SyftTime = $_.SyftTime
-        GrypeTime = $_.GrypeTime
-        CdxgenTime = $_.CdxgenTime
-        ScalibrTime = $_.ScalibrTime
-        OsvTime = $_.OsvTime
-    }
-}
-
-# Generate the markdown report
-$Report = @"
-# SBOM Tool Comparison Report
-
-**Generated:** $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")  
-**Tools:** Syft v1.36.0, Grype v0.103.0, Cdxgen v11.11.0, OSV-Scalibr v0.3.6, OSV-Scanner  
-**Scan Type:** Binary Archive Scanning (JARs, WARs, ZIPs, etc.)
-
----
-
-## Executive Summary
-
-This report presents automated findings from SBOM generation and vulnerability scanning tools for Java binary archives.
-
-### Quick Results
-
-| Project | Syft | Grype | Cdxgen | Scalibr | OSV-Scanner | Fastest Tool |
-|---------|------|-------|--------|---------|-------------|--------------|
-$(@(foreach ($item in $ComponentData) {
-    $timing = $TimingData | Where-Object { $_.Project -eq $item.Project }
-    
-    # Build list of valid tools (only those that found components)
-    $validTools = @()
-    if ($item.Syft -gt 0) { $validTools += @{Tool="Syft"; Time=[double]($timing.SyftTime -replace 's','')} }
-    if ($item.Grype -gt 0) { $validTools += @{Tool="Grype"; Time=[double]($timing.GrypeTime -replace 's','')} }
-    if ($item.Cdxgen -gt 0) { $validTools += @{Tool="Cdxgen"; Time=[double]($timing.CdxgenTime -replace 's','')} }
-    if ($item.Scalibr -gt 0) { $validTools += @{Tool="Scalibr"; Time=[double]($timing.ScalibrTime -replace 's','')} }
-    
-    # Find fastest among valid tools
-    if ($validTools.Count -gt 0) {
-        $fastestTool = ($validTools | Sort-Object Time | Select-Object -First 1).Tool
+if (-not $SkipAnalysis -and -not $TestOnly) {
+    $reportScript = Join-Path $Root "generate-sboms-report.ps1"
+    if (Test-Path $reportScript) {
+        Write-Log "Generating markdown report..."
+        try {
+            $reportPath = Join-Path $OutputDir "sbom-report.md"
+            pwsh -NoLogo -NoProfile -File $reportScript -SummaryFile $SummaryFile -ReportFile $reportPath
+            Write-Log "Markdown report generated: $reportPath"
+        } catch {
+            Write-Log "Report generation failed: $($_.Exception.Message)"
+        }
     } else {
-        $fastestTool = "None"
+        Write-Log "Report script not found: $reportScript"
     }
-    
-    "| **$($item.Project)** | $($item.Syft) ($($timing.SyftTime)) | $($item.Grype) ($($timing.GrypeTime)) | $($item.Cdxgen) ($($timing.CdxgenTime)) | $($item.Scalibr) ($($timing.ScalibrTime)) | $($item.OsvVulns) vulns ($($timing.OsvTime)) | ⚡ $fastestTool |"
-}) -join "`n")
-
----
-
-## Component Detection Summary
-
-### Total Components Identified
-
-| Tool | just-a-bag-of-jars | opencms-exploded | opencms-zip-only | Average |
-|------|-------------------|------------------|------------------|---------|
-$(
-    $syftAvg = ($ComponentData | Measure-Object -Property Syft -Average).Average
-    $grypeAvg = ($ComponentData | Measure-Object -Property Grype -Average).Average
-    $cdxgenAvg = ($ComponentData | Measure-Object -Property Cdxgen -Average).Average
-    $scalibrAvg = ($ComponentData | Measure-Object -Property Scalibr -Average).Average
-    
-    @(
-        "| **Syft** | $($ComponentData[0].Syft) | $($ComponentData[1].Syft) | $($ComponentData[2].Syft) | $([Math]::Round($syftAvg, 1)) |"
-        "| **Grype** | $($ComponentData[0].Grype) | $($ComponentData[1].Grype) | $($ComponentData[2].Grype) | $([Math]::Round($grypeAvg, 1)) |"
-        "| **Cdxgen** | $($ComponentData[0].Cdxgen) | $($ComponentData[1].Cdxgen) | $($ComponentData[2].Cdxgen) | $([Math]::Round($cdxgenAvg, 1)) |"
-        "| **Scalibr** | $($ComponentData[0].Scalibr) | $($ComponentData[1].Scalibr) | $($ComponentData[2].Scalibr) | $([Math]::Round($scalibrAvg, 1)) |"
-    ) -join "`n"
-)
-
----
-
-## Detailed Comparison by Directory
-
-$(@(foreach ($i in 0..($ComponentData.Count - 1)) {
-    $comp = $ComponentData[$i]
-    $timing = $TimingData[$i]
-    
-    $syftSec = [double]($timing.SyftTime -replace 's','')
-    $grypeSec = [double]($timing.GrypeTime -replace 's','')
-    $cdxgenSec = [double]($timing.CdxgenTime -replace 's','')
-    $scalibrSec = [double]($timing.ScalibrTime -replace 's','')
-    $osvSec = [double]($timing.OsvTime -replace 's','')
-    $total = $syftSec + $grypeSec + $cdxgenSec + $scalibrSec + $osvSec
-    
-    # Find winner for components (only among tools that found components)
-    $validComps = @()
-    if ($comp.Syft -gt 0) { $validComps += @{Tool='Syft'; Count=$comp.Syft; Time=$syftSec} }
-    if ($comp.Grype -gt 0) { $validComps += @{Tool='Grype'; Count=$comp.Grype; Time=$grypeSec} }
-    if ($comp.Cdxgen -gt 0) { $validComps += @{Tool='Cdxgen'; Count=$comp.Cdxgen; Time=$cdxgenSec} }
-    if ($comp.Scalibr -gt 0) { $validComps += @{Tool='Scalibr'; Count=$comp.Scalibr; Time=$scalibrSec} }
-    
-    if ($validComps.Count -gt 0) {
-        $maxComp = ($validComps | Measure-Object -Property Count -Maximum).Maximum
-        $compWinner = ($validComps | Where-Object { $_.Count -eq $maxComp } | Select-Object -First 1).Tool
-        $speedWinner = ($validComps | Sort-Object Time | Select-Object -First 1).Tool
-        $minTime = ($validComps | Sort-Object Time | Select-Object -First 1).Time
-    } else {
-        $maxComp = 0
-        $compWinner = 'None'
-        $speedWinner = 'None'
-        $minTime = 0
-    }
-    
-    "### $($comp.Project)`n`n" +
-    "| Tool | Components Detected | Time | Status |`n" +
-    "|------|---------------------|------|--------|`n" +
-    "| **Syft** | $($comp.Syft) $(if ($comp.Syft -eq $maxComp -and $comp.Syft -gt 0) { '🏆' } else { '' }) | $($timing.SyftTime) $(if ($syftSec -eq $minTime -and $comp.Syft -gt 0) { '⚡' } else { '' }) | $(if ($comp.Syft -gt 0) { '✅' } else { '❌' }) |`n" +
-    "| **Grype** | $($comp.Grype) $(if ($comp.Grype -eq $maxComp -and $comp.Grype -gt 0) { '🏆' } else { '' }) | $($timing.GrypeTime) $(if ($grypeSec -eq $minTime -and $comp.Grype -gt 0) { '⚡' } else { '' }) | $(if ($comp.Grype -gt 0) { '✅' } else { '❌' }) |`n" +
-    "| **Cdxgen** | $($comp.Cdxgen) $(if ($comp.Cdxgen -eq $maxComp -and $comp.Cdxgen -gt 0) { '🏆' } else { '' }) | $($timing.CdxgenTime) $(if ($cdxgenSec -eq $minTime -and $comp.Cdxgen -gt 0) { '⚡' } else { '' }) | $(if ($comp.Cdxgen -gt 0) { '✅' } else { '❌' }) |`n" +
-    "| **Scalibr** | $($comp.Scalibr) $(if ($comp.Scalibr -eq $maxComp -and $comp.Scalibr -gt 0) { '🏆' } else { '' }) | $($timing.ScalibrTime) $(if ($scalibrSec -eq $minTime -and $comp.Scalibr -gt 0) { '⚡' } else { '' }) | $(if ($comp.Scalibr -gt 0) { '✅' } else { '❌' }) |`n" +
-    "| **OSV-Scanner** | $($comp.OsvVulns) vulnerabilities | $($timing.OsvTime) $(if ($osvSec -eq $minTime -and $osvSec -gt 0) { '⚡' } else { '' }) | $(if ($comp.OsvVulns -ge 0) { '✅' } else { '❌' }) |`n" +
-    "| **Total** | **$maxComp components** | **$([Math]::Round($total, 2))s** | |`n`n" +
-    "**Winner - Components:** $compWinner ($maxComp detected)  `n" +
-    "**Winner - Speed:** $speedWinner ($([Math]::Round($minTime, 2))s)"
-}) -join "`n`n")
-
----
-
-## Performance Analysis
-
-### Execution Times
-
-| Project | Syft | Grype | Cdxgen | OSV-Scanner | Total |
-|---------|------|-------|--------|-------------|-------|
-$(@(foreach ($timing in $TimingData) {
-    $syftSec = [double]($timing.SyftTime -replace 's','')
-    $grypeSec = [double]($timing.GrypeTime -replace 's','')
-    $cdxgenSec = [double]($timing.CdxgenTime -replace 's','')
-    $osvSec = [double]($timing.OsvTime -replace 's','')
-    $total = $syftSec + $grypeSec + $cdxgenSec + $osvSec
-    "| **$($timing.Project)** | $($timing.SyftTime) | $($timing.GrypeTime) | $($timing.CdxgenTime) | $($timing.OsvTime) | $([Math]::Round($total, 2))s |"
-}) -join "`n")
-
-### Average Execution Time per Tool
-
-| Tool | Average Time | Performance Rating |
-|------|-------------|-------------------|
-$(
-    $syftAvgTime = ($TimingData | ForEach-Object { [double]($_.SyftTime -replace 's','') } | Measure-Object -Average).Average
-    $grypeAvgTime = ($TimingData | ForEach-Object { [double]($_.GrypeTime -replace 's','') } | Measure-Object -Average).Average
-    $cdxgenAvgTime = ($TimingData | ForEach-Object { [double]($_.CdxgenTime -replace 's','') } | Measure-Object -Average).Average
-    $osvAvgTime = ($TimingData | ForEach-Object { [double]($_.OsvTime -replace 's','') } | Measure-Object -Average).Average
-    
-    @(
-        "| **Syft** | $([Math]::Round($syftAvgTime, 2))s | $(if ($syftAvgTime -lt 10) { '⚡⚡⚡⚡⚡ Excellent' } elseif ($syftAvgTime -lt 20) { '⚡⚡⚡⚡ Good' } else { '⚡⚡⚡ Fair' }) |"
-        "| **Grype** | $([Math]::Round($grypeAvgTime, 2))s | $(if ($grypeAvgTime -lt 10) { '⚡⚡⚡⚡⚡ Excellent' } elseif ($grypeAvgTime -lt 20) { '⚡⚡⚡⚡ Good' } else { '⚡⚡⚡ Fair' }) |"
-        "| **Cdxgen** | $([Math]::Round($cdxgenAvgTime, 2))s | $(if ($cdxgenAvgTime -lt 10) { '⚡⚡⚡⚡⚡ Excellent' } elseif ($cdxgenAvgTime -lt 20) { '⚡⚡⚡⚡ Good' } else { '⚡⚡⚡ Fair' }) |"
-        "| **OSV-Scanner** | $([Math]::Round($osvAvgTime, 2))s | $(if ($osvAvgTime -lt 10) { '⚡⚡⚡⚡⚡ Excellent' } elseif ($osvAvgTime -lt 20) { '⚡⚡⚡⚡ Good' } else { '⚡⚡⚡ Fair' }) |"
-    ) -join "`n"
-)
-
----
-
-## Key Findings
-
-### 1. Component Detection Accuracy
-
-$(
-    $project1 = $ComponentData[0]
-    if ($project1.Syft -eq $project1.Grype -and $project1.Grype -eq $project1.Cdxgen) {
-        "✅ **Perfect Agreement on $($project1.Project)**: All three tools identified $($project1.Syft) components"
-    } else {
-        "⚠️ **Variation on $($project1.Project)**: Syft ($($project1.Syft)), Grype ($($project1.Grype)), Cdxgen ($($project1.Cdxgen))"
-    }
-)
-
-$(
-    $project2 = $ComponentData[1]
-    $maxComponents = [Math]::Max([Math]::Max($project2.Syft, $project2.Grype), $project2.Cdxgen)
-    "- **$($project2.Project)**: Syft found the most components ($($project2.Syft))"
-    if ($project2.Syft -gt $project2.Grype) {
-        "  - Syft found $($project2.Syft - $project2.Grype) more components than Grype (likely with UNKNOWN versions)"
-    }
-    if ($project2.Grype -gt $project2.Cdxgen) {
-        "  - Grype found $($project2.Grype - $project2.Cdxgen) more components than Cdxgen"
-    }
-    if ($project2.Cdxgen -eq 0) {
-        "  - ❌ Cdxgen found 0 components"
-    }
-)
-
-$(
-    $project3 = $ComponentData[2]
-    if ($project3.Cdxgen -eq 0) {
-        "- **$($project3.Project)**: ❌ Cdxgen failed to detect any components in ZIP archive format"
-    }
-)
-
-### 2. Performance Winners
-
-$(
-    foreach ($timing in $TimingData) {
-        $times = @(
-            @{Tool='Syft'; Time=[double]($timing.SyftTime -replace 's','')},
-            @{Tool='Grype'; Time=[double]($timing.GrypeTime -replace 's','')},
-            @{Tool='Cdxgen'; Time=[double]($timing.CdxgenTime -replace 's','')}
-        ) | Sort-Object Time
-        "- **$($timing.Project)**: $($times[0].Tool) was fastest at $($timing.($times[0].Tool + 'Time'))"
-    }
-)
-
-### 3. Tool Success Rate
-
-| Tool | Successful Scans | Success Rate |
-|------|-----------------|--------------|
-$(
-    $syftSuccess = ($ComponentData | Where-Object { $_.Syft -gt 0 }).Count
-    $grypeSuccess = ($ComponentData | Where-Object { $_.Grype -gt 0 }).Count
-    $cdxgenSuccess = ($ComponentData | Where-Object { $_.Cdxgen -gt 0 }).Count
-    $total = $ComponentData.Count
-    
-    @(
-        "| **Syft** | $syftSuccess/$total | $(if ($syftSuccess -eq $total) { '✅ 100%' } else { "$([Math]::Round(($syftSuccess/$total)*100, 1))%" }) |"
-        "| **Grype** | $grypeSuccess/$total | $(if ($grypeSuccess -eq $total) { '✅ 100%' } else { "$([Math]::Round(($grypeSuccess/$total)*100, 1))%" }) |"
-        "| **Cdxgen** | $cdxgenSuccess/$total | $(if ($cdxgenSuccess -eq $total) { '✅ 100%' } else { "⚠️ $([Math]::Round(($cdxgenSuccess/$total)*100, 1))%" }) |"
-    ) -join "`n"
-)
-
----
-
-## Recommendations
-
-### Tool Selection Guide
-
-| Use Case | Recommended Tool | Reason |
-|----------|-----------------|--------|
-| **Comprehensive SBOM** | **Syft** | Most complete component discovery |
-| **Security Scanning** | **Grype** | Fast + integrated vulnerability detection |
-| **CI/CD Pipeline** | **Grype** | Fastest execution with security insights |
-| **ZIP Archives** | **Syft or Grype** | Cdxgen failed on ZIP format |
-| **Speed Critical** | **Grype** | Consistently fastest performance |
-
-### Optimal Workflow
-
-1. Run Syft for comprehensive SBOM generation
-2. Run Grype for vulnerability scanning
-3. Combine results for complete security-aware SBOM
-
----
-
-## Detailed Scan Results
-
-### Execution Status
-
-| Directory | Syft | Grype | Cdxgen | OSV-Scanner |
-|-----------|------|-------|--------|-------------|
-$(@(foreach ($item in $Summary) {
-    $dirName = ($item.Directory -split '\\')[-1]
-    "| $dirName | $($item.Syft) | $($item.Grype) | $($item.Cdxgen) | $($item.OsvScanner) |"
-}) -join "`n")
-
----
-
-## Output Files
-
-The following files have been generated:
-
-### Syft SBOMs
-
-$(Get-ChildItem "$OutputDir\*-syft-sbom.json" | ForEach-Object { "- ``$($_.Name)``" } | Join-String -Separator "`n")
-
-### Grype SBOMs
-
-$(Get-ChildItem "$OutputDir\*-grype-sbom.json" | ForEach-Object { "- ``$($_.Name)``" } | Join-String -Separator "`n")
-
-### Cdxgen SBOMs
-
-$(Get-ChildItem "$OutputDir\*-cdxgen-sbom.json" | ForEach-Object { "- ``$($_.Name)``" } | Join-String -Separator "`n")
-
-### OSV-Scanner Results
-
-$(Get-ChildItem "$OutputDir\*-osv-scanner.json" | ForEach-Object { "- ``$($_.Name)``" } | Join-String -Separator "`n")
-
----
-
-**Report Location:** ``$ReportFile``  
-**Summary JSON:** ``$SummaryFile``  
-**Log File:** ``$LogFile``
-
----
-
-Report generated automatically by generate-sboms.ps1
-"@
-
-$Report | Out-File $ReportFile -Encoding UTF8
-Write-Log "Markdown report generated: $ReportFile"
-} else {
-    Write-Log "Skipping markdown report generation (SkipAnalysis flag set)"
 }
+
+Write-Log "Script execution complete."
+

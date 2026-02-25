@@ -1,0 +1,9 @@
+{
+    "java.compile.nullAnalysis.mode": "automatic",
+    "java.configuration.updateBuildConfiguration": "interactive",
+    "github.copilot.chat.mcp.servers": {
+        "osv-scanner-mcp": {
+            "transport": "http",
+            "url": "http://localhost:8080"
+        }
+    }

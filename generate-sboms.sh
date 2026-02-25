@@ -8,7 +8,7 @@
 # DESCRIPTION:
 #   Scans directories for binary archives (JARs, WARs, EARs, ZIPs, etc.) and generates:
 #   - SBOM files using Syft, Grype, and Cdxgen (all in CycloneDX JSON format)
-#   - SBOM files using OSV-Scalibr (SPDX JSON format)
+#   - SBOM files using OSV-Scalibr (CycloneDX JSON format)
 #   - Vulnerability reports using OSV-Scanner (note: incompatible with CycloneDX, reports 0)
 #   - Comparative analysis report in Markdown format
 #
@@ -64,6 +64,8 @@ done
 # CONFIGURATION
 # ==========================================
 ROOT=$(pwd)
+SOURCE_PROJECTS_DIR="$ROOT/source-projects"
+BINARY_PROJECTS_DIR="$ROOT/binary-projects"
 OUTPUT_DIR="$ROOT/generate-sboms"
 SUMMARY_FILE="$OUTPUT_DIR/sbom-summary.json"
 LOG_FILE="$OUTPUT_DIR/run.log"
@@ -78,8 +80,8 @@ mkdir -p "$OUTPUT_DIR"
 # ==========================================
 # DOWNLOAD TEST FILES
 # ==========================================
-ZIP_DIR="$ROOT/opencms-zip-only"
-WAR_DIR="$ROOT/opencms-exploded"
+ZIP_DIR="$BINARY_PROJECTS_DIR/opencms-zip-only"
+WAR_DIR="$BINARY_PROJECTS_DIR/opencms-exploded"
 ZIP_FILE="$ZIP_DIR/opencms-9.5.0.zip"
 WAR_FILE="$WAR_DIR/opencms.war"
 DOWNLOAD_URL="https://github.com/alkacon/opencms-core/releases/download/build_9_5_0/opencms-9.5.0.zip"
@@ -147,35 +149,47 @@ if [ "$SKIP_GENERATION" = false ]; then
 
 DIRS_TO_SCAN=()
 
-if [ "$RECURSIVE" = true ]; then
-    # Find all directories recursively
-    while IFS= read -r -d '' dir; do
-        # Skip output directory
-        if [ "$dir" = "$OUTPUT_DIR" ]; then
-            continue
-        fi
-        
-        # Check if directory contains binaries
-        if find "$dir" -maxdepth 10 -type f \( -name "*.jar" -o -name "*.war" -o -name "*.ear" -o -name "*.zip" -o -name "*.tar" -o -name "*.tar.gz" -o -name "*.tgz" -o -name "*.rpm" -o -name "*.deb" -o -name "*.aar" \) 2>/dev/null | grep -q .; then
-            DIRS_TO_SCAN+=("$dir")
-        fi
-    done < <(find "$ROOT" -mindepth 1 -type d -print0)
-else
-    # Only check immediate subdirectories
-    for dir in "$ROOT"/*/; do
-        # Skip output directory
-        if [ "$dir" = "$OUTPUT_DIR/" ]; then
-            continue
-        fi
-        
-        # Check if directory contains binaries
-        if find "$dir" -maxdepth 10 -type f \( -name "*.jar" -o -name "*.war" -o -name "*.ear" -o -name "*.zip" -o -name "*.tar" -o -name "*.tar.gz" -o -name "*.tgz" -o -name "*.rpm" -o -name "*.deb" -o -name "*.aar" \) 2>/dev/null | grep -q .; then
-            DIRS_TO_SCAN+=("${dir%/}")
-        fi
-    done
+# Scan binary projects directory
+if [ -d "$BINARY_PROJECTS_DIR" ]; then
+    if [ "$RECURSIVE" = true ]; then
+        # Find all directories recursively in binary-projects
+        while IFS= read -r -d '' dir; do
+            # Check if directory contains binaries
+            if find "$dir" -maxdepth 10 -type f \( -name "*.jar" -o -name "*.war" -o -name "*.ear" -o -name "*.zip" -o -name "*.tar" -o -name "*.tar.gz" -o -name "*.tgz" -o -name "*.rpm" -o -name "*.deb" -o -name "*.aar" \) 2>/dev/null | grep -q .; then
+                DIRS_TO_SCAN+=("$dir")
+            fi
+        done < <(find "$BINARY_PROJECTS_DIR" -mindepth 1 -type d -print0)
+    else
+        # Only check immediate subdirectories in binary-projects
+        for dir in "$BINARY_PROJECTS_DIR"/*/; do
+            if find "$dir" -maxdepth 10 -type f \( -name "*.jar" -o -name "*.war" -o -name "*.ear" -o -name "*.zip" -o -name "*.tar" -o -name "*.tar.gz" -o -name "*.tgz" -o -name "*.rpm" -o -name "*.deb" -o -name "*.aar" \) 2>/dev/null | grep -q .; then
+                DIRS_TO_SCAN+=("${dir%/}")
+            fi
+        done
+    fi
 fi
 
-log "Found ${#DIRS_TO_SCAN[@]} directories with binaries to scan."
+# Scan source projects directory
+if [ -d "$SOURCE_PROJECTS_DIR" ]; then
+    if [ "$RECURSIVE" = true ]; then
+        # Find all directories recursively in source-projects
+        while IFS= read -r -d '' dir; do
+            # Check if directory is a Maven or Gradle project
+            if [ -f "$dir/pom.xml" ] || [ -f "$dir/build.gradle" ] || [ -f "$dir/build.gradle.kts" ]; then
+                DIRS_TO_SCAN+=("$dir")
+            fi
+        done < <(find "$SOURCE_PROJECTS_DIR" -mindepth 1 -type d -print0)
+    else
+        # Only check immediate subdirectories in source-projects
+        for dir in "$SOURCE_PROJECTS_DIR"/*/; do
+            if [ -f "${dir%/}/pom.xml" ] || [ -f "${dir%/}/build.gradle" ] || [ -f "${dir%/}/build.gradle.kts" ]; then
+                DIRS_TO_SCAN+=("${dir%/}")
+            fi
+        done
+    fi
+fi
+
+log "Found ${#DIRS_TO_SCAN[@]} directories to scan (binaries or source projects)."
 
 # ==========================================
 # GENERATE SBOMs USING ALL TOOLS
@@ -255,7 +269,7 @@ for DIR_PATH in "${DIRS_TO_SCAN[@]}"; do
     # 4) OSV-Scalibr
     # -------------------------------
     SCALIBR_START=$(date +%s.%N)
-    if scalibr -o "spdx23-json=$SCALIBR_OUT" "$DIR_PATH" >/dev/null 2>&1; then
+    if scalibr -o "cdx-json=$SCALIBR_OUT" "$DIR_PATH" >/dev/null 2>&1; then
         SCALIBR_END=$(date +%s.%N)
         SCALIBR_TIME=$(echo "$SCALIBR_END - $SCALIBR_START" | bc)
         SCALIBR_TIME_FORMATTED=$(printf "%.2f" "$SCALIBR_TIME")
@@ -347,7 +361,7 @@ declare -A SCALIBR_TIMES
 declare -A OSV_TIMES
 
 # Collect component counts from all SBOMs
-for PROJECT in "just-a-bag-of-jars" "opencms-exploded" "opencms-zip-only" "code-with-quarkus"; do
+for PROJECT in "just-a-bag-of-jars" "opencms-exploded" "opencms-zip-only" "code-with-quarkus" "sample-java-maven-single" "sample-java-maven-multi" "sample-java-gradle-single" "sample-java-gradle-multi"; do
     SYFT_FILE="$OUTPUT_DIR/$PROJECT-syft-sbom.json"
     GRYPE_FILE="$OUTPUT_DIR/$PROJECT-grype-sbom.json"
     CDXGEN_FILE="$OUTPUT_DIR/$PROJECT-cdxgen-sbom.json"
@@ -375,9 +389,9 @@ for PROJECT in "just-a-bag-of-jars" "opencms-exploded" "opencms-zip-only" "code-
         CDXGEN_COUNTS[$PROJECT]=0
     fi
     
-    # Count Scalibr packages (SPDX format)
+    # Count Scalibr components (CycloneDX format)
     if [ -f "$SCALIBR_FILE" ]; then
-        SCALIBR_COUNTS[$PROJECT]=$(jq '.packages | length' "$SCALIBR_FILE" 2>/dev/null || echo 0)
+        SCALIBR_COUNTS[$PROJECT]=$(jq '.components | length' "$SCALIBR_FILE" 2>/dev/null || echo 0)
     else
         SCALIBR_COUNTS[$PROJECT]=0
     fi
@@ -488,11 +502,13 @@ SYFT_AVG=$(echo "scale=1; (${SYFT_COUNTS[just-a-bag-of-jars]} + ${SYFT_COUNTS[op
 GRYPE_AVG=$(echo "scale=1; (${GRYPE_COUNTS[just-a-bag-of-jars]} + ${GRYPE_COUNTS[opencms-exploded]} + ${GRYPE_COUNTS[opencms-zip-only]}) / 3" | bc)
 CDXGEN_AVG=$(echo "scale=1; (${CDXGEN_COUNTS[just-a-bag-of-jars]} + ${CDXGEN_COUNTS[opencms-exploded]} + ${CDXGEN_COUNTS[opencms-zip-only]}) / 3" | bc)
 SCALIBR_AVG=$(echo "scale=1; (${SCALIBR_COUNTS[just-a-bag-of-jars]} + ${SCALIBR_COUNTS[opencms-exploded]} + ${SCALIBR_COUNTS[opencms-zip-only]}) / 3" | bc)
+TRIVY_AVG=$(echo "scale=1; (${TRIVY_COUNTS[just-a-bag-of-jars]} + ${TRIVY_COUNTS[opencms-exploded]} + ${TRIVY_COUNTS[opencms-zip-only]}) / 3" | bc)
 
 echo "| **Syft** | ${SYFT_COUNTS[just-a-bag-of-jars]} | ${SYFT_COUNTS[opencms-exploded]} | ${SYFT_COUNTS[opencms-zip-only]} | $SYFT_AVG |" >> "$REPORT_FILE"
 echo "| **Grype** | ${GRYPE_COUNTS[just-a-bag-of-jars]} | ${GRYPE_COUNTS[opencms-exploded]} | ${GRYPE_COUNTS[opencms-zip-only]} | $GRYPE_AVG |" >> "$REPORT_FILE"
 echo "| **Cdxgen** | ${CDXGEN_COUNTS[just-a-bag-of-jars]} | ${CDXGEN_COUNTS[opencms-exploded]} | ${CDXGEN_COUNTS[opencms-zip-only]} | $CDXGEN_AVG |" >> "$REPORT_FILE"
 echo "| **Scalibr** | ${SCALIBR_COUNTS[just-a-bag-of-jars]} | ${SCALIBR_COUNTS[opencms-exploded]} | ${SCALIBR_COUNTS[opencms-zip-only]} | $SCALIBR_AVG |" >> "$REPORT_FILE"
+echo "| **Trivy** | ${TRIVY_COUNTS[just-a-bag-of-jars]} | ${TRIVY_COUNTS[opencms-exploded]} | ${TRIVY_COUNTS[opencms-zip-only]} | $TRIVY_AVG |" >> "$REPORT_FILE"
 
 cat >> "$REPORT_FILE" <<'EOFMD'
 
